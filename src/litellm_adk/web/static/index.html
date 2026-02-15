@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LiteLLM ADK | Premium Agent Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@500;600;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body class="premium-theme">
+    <div class="app-wrapper">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">✨</span>
+                    <h1>ADK Agent</h1>
+                </div>
+            </div>
+
+            <div class="sidebar-nav">
+                <button id="new-chat" class="new-chat-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    <span>New Conversation</span>
+                </button>
+
+                <div class="session-section">
+                    <label>History</label>
+                    <div id="session-container" class="session-list"></div>
+                </div>
+            </div>
+
+            <div class="sidebar-footer">
+                <div class="settings-card">
+                    <div class="setting-row">
+                        <span>Streaming</span>
+                        <label class="switch">
+                            <input type="checkbox" id="stream-toggle" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="chat-viewport">
+            <header class="chat-header">
+                <div class="header-status">
+                    <div class="dot-pulse"></div>
+                    <span id="agent-status">Ready</span>
+                </div>
+                <div class="header-actions">
+                    <button id="clear-chat" class="icon-btn" title="Clear Chat">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2">
+                            </path>
+                        </svg>
+                    </button>
+                </div>
+            </header>
+
+            <div id="chat-messages" class="chat-history">
+                <!-- Messages will be injected here -->
+                <div class="welcome-hero">
+                    <div class="hero-icon">🤖</div>
+                    <h2>How can I help you today?</h2>
+                    <p>I'm your LiteLLM ADK agent, equipped with advanced tools and memory.</p>
+                </div>
+            </div>
+
+            <div class="input-section">
+                <div class="input-container">
+                    <div class="input-glass">
+                        <textarea id="user-input" placeholder="Type your message..." rows="1"></textarea>
+                        <button id="send-btn" class="send-btn">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <line x1="22" y1="2" x2="11" y2="13"></line>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/chat.js"></script>
+</body>
+
+</html>

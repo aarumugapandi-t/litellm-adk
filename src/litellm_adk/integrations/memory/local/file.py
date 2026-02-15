@@ -60,3 +60,6 @@ class FileMemory(BaseMemory):
             self._cache[session_id] = {"messages": [], "metadata": {}}
         self._cache[session_id]["metadata"] = metadata
         self._save()
+
+    def list_sessions(self) -> List[str]:
+        return list(self._cache.keys())

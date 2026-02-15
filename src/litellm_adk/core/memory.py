@@ -35,3 +35,7 @@ class BaseMemory(ABC):
     def save_session_metadata(self, session_id: str, metadata: Dict[str, Any]):
         """Save/Update metadata/state for a given session."""
         pass
+
+    def list_sessions(self) -> List[str]:
+        """Return a list of all active session IDs."""
+        return []

@@ -386,7 +386,6 @@ class LiteLLMAgent(BaseAgent):
     def _should_require_approval(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
         """Centralized check for tool approval requirements."""
         # 1. Check registry flag (can be bool OR predicate)
-        from ..tools.registry import tool_registry
         registry_meta = tool_registry._tools.get(tool_name, {})
         req = registry_meta.get("requires_approval")
         
@@ -1066,3 +1065,23 @@ class LiteLLMAgent(BaseAgent):
             new_turns.append(final_msg)
             self._update_history(new_turns, actual_session_id=actual_session_id)
             return
+
+    def run(self, port: int = 8000, host: str = "127.0.0.1", debug: bool = False):
+        """
+        Launches the interactive Web UI for the agent.
+        Requires 'fastapi' and 'uvicorn' to be installed.
+        """
+        try:
+            import uvicorn
+            from ..web.server import create_ui_app
+        except ImportError:
+            print("\n❌ Error: 'fastapi' and 'uvicorn' are required for the Web UI.")
+            print("Please fix this by running: pip install fastapi uvicorn\n")
+            return
+
+        app = create_ui_app(self)
+        
+        print(f"\n🚀 LiteLLM ADK Web UI starting at http://{host}:{port}")
+        print("Press Ctrl+C to stop.\n")
+        
+        uvicorn.run(app, host=host, port=port, log_level="error" if not debug else "info")

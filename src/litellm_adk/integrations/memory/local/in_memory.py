@@ -33,3 +33,7 @@ class InMemoryMemory(BaseMemory):
 
     def save_session_metadata(self, session_id: str, metadata: Dict[str, Any]):
         self._metadata[session_id] = metadata.copy()
+
+    def list_sessions(self) -> List[str]:
+        # Merge keys from storage and metadata
+        return list(set(self._storage.keys()) | set(self._metadata.keys()))
