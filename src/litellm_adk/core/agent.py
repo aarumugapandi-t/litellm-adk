@@ -18,6 +18,7 @@ from .context import ContextManager
 from .approval import ApprovalManager
 from .models import ApprovalStatus, ApprovalRequest, AgentResponse
 from .policy import PolicyEngine
+from .handoff import HandoffAgent, HandoffResult
 
 # Global LiteLLM configuration for resilience
 litellm.drop_params = True
@@ -108,6 +109,8 @@ class LiteLLMAgent(BaseAgent):
 
     def __init__(
         self,
+        name: str = "Assistant",
+        description: str = "A helpful AI assistant.",
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -117,8 +120,14 @@ class LiteLLMAgent(BaseAgent):
         max_context_tokens: Optional[int] = None,
         fallbacks: Optional[List[Union[str, Dict[str, Any]]]] = None,
         vector_store: Optional['VectorStore'] = None,
+        sub_agents: Optional[List['LiteLLMAgent']] = None,
+        handoff_context: str = "clean",
+        handoff_memory: str = "ephemeral",
+        use_global_tools: bool = False,
         **kwargs
     ):
+        self.name = name
+        self.description = description
         self.model = model or settings.model
         self.api_key = api_key or settings.api_key
         self.base_url = base_url or settings.base_url
@@ -129,11 +138,27 @@ class LiteLLMAgent(BaseAgent):
             self.model = f"openai/{self.model}"
             
         self.system_prompt = system_prompt
+        self.sub_agents = {agent.name: agent for agent in (sub_agents or [])}
+        
+        # Handoff context strategy:
+        #   "clean"     - sub-agent receives only the last user message (safe, provider-agnostic)
+        #   "user_only" - sub-agent receives all user turns from parent history (no assistant/tool msgs)
+        #   "full"      - sub-agent receives full parent history (most context, strict-provider risk)
+        if handoff_context not in ("clean", "user_only", "full"):
+            raise ValueError(f"Invalid handoff_context '{handoff_context}'. Must be 'clean', 'user_only', or 'full'.")
+        self.handoff_context = handoff_context
+        
+        # Whether sub-agent work is persisted to sub-agent's memory on handoff:
+        #   "ephemeral" - sub-agent does NOT write to its memory during handoff (default, safest)
+        #   "persist"   - sub-agent writes exchange to its own memory under an isolated session UUID
+        if handoff_memory not in ("ephemeral", "persist"):
+            raise ValueError(f"Invalid handoff_memory '{handoff_memory}'. Must be 'ephemeral' or 'persist'.")
+        self.handoff_memory = handoff_memory
         
         # Smart Tool Resolution
         if tools is None:
-            # Default to all registered tools if none provided
-            self.tools = tool_registry.get_tool_definitions()
+            # Only use global registry if explicitly requested
+            self.tools = tool_registry.get_tool_definitions() if use_global_tools else []
         else:
             # Process provided list (can be definitions OR functions)
             processed_tools = []
@@ -144,6 +169,29 @@ class LiteLLMAgent(BaseAgent):
                 elif isinstance(t, dict):
                      processed_tools.append(t)
             self.tools = processed_tools
+            
+        # Dynamically inject transfer tools for sub_agents
+        for agent_name, sub_agent in self.sub_agents.items():
+            transfer_tool = {
+                "type": "function",
+                "function": {
+                    "name": f"transfer_to_{agent_name}",
+                    "description": f"Transfer control to {agent_name}. {sub_agent.description} Use this when the user's request should be handled by this specialist.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "instructions": {
+                                "type": "string",
+                                "description": "Optional context or task instructions to pass to the sub-agent."
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            }
+            # Only add if a tool with this name doesn't already exist
+            if not any(t.get("function", {}).get("name") == f"transfer_to_{agent_name}" for t in self.tools):
+                self.tools.append(transfer_tool)
         
         # Initialize BaseAgent (Model, Memory, VectorStore)
         resolved_memory = memory or InMemoryMemory()
@@ -258,39 +306,40 @@ class LiteLLMAgent(BaseAgent):
             adk_logger.warning(f"Vector retrieval failed: {e}")
             return None
 
+    def _retrieve_context_sync(self, prompt: str) -> Optional[str]:
+        """Synchronous wrapper for vector context retrieval."""
+        if not self.vector_store or not prompt:
+            return None
+        
+        # Check cache first (sync)
+        if prompt in self._context_cache:
+            self._context_cache.move_to_end(prompt)
+            return self._context_cache[prompt]
 
-    def _prepare_messages(self, prompt: str, actual_session_id: str) -> List[Dict[str, str]]:
-        # 2. Fetch/Initialize History from Memory
+        try:
+            # Run the async search in a sync context
+            # NOTE: asyncio.run creates a NEW event loop. Safe for standalone scripts using .invoke()
+            return asyncio.run(self._retrieve_context(prompt))
+        except Exception as e:
+            adk_logger.warning(f"Sync vector retrieval failed: {e}")
+            return None
+
+
+    def _prepare_messages(self, prompt: str, actual_session_id: str) -> List[Dict[str, Any]]:
+        """Build the message list for an LLM call from persistent memory."""
+        # Fetch/Initialize History from Persistent Memory
         history = self.memory.get_messages(actual_session_id)
         is_new_session = not history
         
         if is_new_session:
             history = [{"role": "system", "content": self.system_prompt}]
-            # Don't persist system prompt until first real turn to keep DB clean
             
         messages = history.copy()
         if prompt:
-            # 2a. Vector Retrieval (Semantic Search)
-            if self.vector_store:
-                try:
-                    # Search logic inside _prepare_messages might be blocking in sync invoke, 
-                    # but wait, vector_store.search is async.
-                    # LiteLLMAgent methods are invoke(sync) and ainvoke(async).
-                    # 'invoke' cannot await. So VectorStore mostly supports async agents.
-                    # We will only support it for async invoke for now or use asyncio.run/loop for sync (risky).
-                    # Actually, for simplicity in 'prepare_messages' which is sync:
-                    # We might need to skip distinct vector search here or make prepare_messages async?
-                    # But prepare_messages is called by sync invoke. 
-                    # Let's put a TODO/Warning for sync usage or assume async usage is primary.
-                    pass
-                except Exception as e:
-                     adk_logger.warning(f"Vector search failed: {e}")
-
             user_msg = {"role": "user", "content": prompt}
             messages.append(user_msg)
             
-            # 3. Persist turn start
-            # Ensure messages are sanitized and tokenized before first persistence
+            # Persist turn start
             current_user_msg = self._sanitize_message(user_msg)
             current_user_msg["token_count"] = ContextManager.count_tokens([current_user_msg], self.model)
             
@@ -301,7 +350,7 @@ class LiteLLMAgent(BaseAgent):
             else:
                 self.memory.add_message(actual_session_id, current_user_msg)
         
-        # 4. Context Management (Truncation)
+        # Context Management (Truncation)
         if self.max_context_tokens:
             messages = ContextManager.truncate_history(
                 messages, 
@@ -310,6 +359,233 @@ class LiteLLMAgent(BaseAgent):
             )
             
         return messages
+
+    def _build_subagent_messages(
+        self,
+        parent_messages: List[Dict[str, Any]],
+        target_agent: 'LiteLLMAgent',
+        instructions: Optional[str]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Build the context message list to pass to a sub-agent during a handoff.
+        
+        Returns None for 'clean' mode (sub-agent uses its own fresh _prepare_messages).
+        Returns a pre-built message list for 'user_only' and 'full' modes.
+        """
+        sys_msg = {"role": "system", "content": target_agent.system_prompt}
+        instr_msg = {
+            "role": "system",
+            "content": f"Supervisor instructions: {instructions}"
+        } if instructions else None
+        
+        if self.handoff_context == "clean":
+            # Sub-agent will use its own _prepare_messages with a fresh session — return None
+            return None
+        
+        elif self.handoff_context == "user_only":
+            # Extract all user messages from parent history
+            user_msgs = [m for m in parent_messages if m.get("role") == "user"]
+            msgs = [sys_msg]
+            if instr_msg:
+                msgs.append(instr_msg)
+            msgs.extend(user_msgs)
+            return msgs
+        
+        elif self.handoff_context == "full":
+            # Full parent history, system replaced, trailing tool_calls-only assistant msg dropped
+            msgs = list(parent_messages)  # shallow copy
+            if msgs and msgs[0].get("role") == "system":
+                msgs[0] = sys_msg
+            else:
+                msgs.insert(0, sys_msg)
+            
+            # Drop trailing assistant message that was solely used to call the transfer tool
+            # (its entire purpose was to trigger the handoff — confuses sub-agent LLM)
+            if msgs and msgs[-1].get("role") == "assistant" and "tool_calls" in msgs[-1]:
+                msgs = msgs[:-1]
+            
+            if instr_msg:
+                msgs.append(instr_msg)
+            return msgs
+        
+        return None  # Fallback
+
+    def _dispatch_to_subagent(
+        self,
+        target_agent: 'LiteLLMAgent',
+        parent_messages: List[Dict[str, Any]],
+        instructions: Optional[str],
+        tool_call_id: str,
+        session_id: Optional[str],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Synchronously dispatch a handoff to a sub-agent and return a tool result dict.
+        """
+        override_messages = self._build_subagent_messages(parent_messages, target_agent, instructions)
+        last_user_msg = next((m["content"] for m in reversed(parent_messages) if m.get("role") == "user"), "Please handle the user's request.")
+        task_prompt = instructions or last_user_msg
+        
+        sub_session_id = str(uuid.uuid4())
+        persist = (self.handoff_memory == "persist")
+        
+        if override_messages is None:
+            adk_logger.info(f"[Handoff:clean] → {target_agent.name}")
+            sub_response = target_agent.invoke(task_prompt, session_id=sub_session_id, _persist_history=persist, **kwargs)
+        else:
+            adk_logger.info(f"[Handoff:{self.handoff_context}] → {target_agent.name}")
+            sub_response = target_agent.invoke(
+                "",
+                session_id=sub_session_id,
+                _override_messages=override_messages,
+                _persist_history=persist,
+                **kwargs
+            )
+        
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": f"[{target_agent.name}]: {sub_response.content}"
+        }
+
+    def _dispatch_to_subagent_sync_streaming(
+        self,
+        target_agent: 'LiteLLMAgent',
+        parent_messages: List[Dict[str, Any]],
+        instructions: Optional[str],
+        tool_call_id: str,
+        session_id: Optional[str],
+        stream_events: bool,
+        **kwargs
+    ):
+        """
+        Generator for sync streaming handoffs. Uses invoke for sub-agent to avoid nested generators.
+        """
+        override_messages = self._build_subagent_messages(parent_messages, target_agent, instructions)
+        last_user_msg = next((m["content"] for m in reversed(parent_messages) if m.get("role") == "user"), "Please handle the user's request.")
+        task_prompt = instructions or last_user_msg
+
+        sub_session_id = str(uuid.uuid4())
+        persist = (self.handoff_memory == "persist")
+        adk_logger.info(f"[Handoff:{self.handoff_context}] → {target_agent.name} (sync-stream) | prompt='{task_prompt[:60]}'")
+
+        if override_messages is None:
+            sub_response = target_agent.invoke(task_prompt, session_id=sub_session_id, _persist_history=persist)
+        else:
+            sub_response = target_agent.invoke(
+                "",
+                session_id=sub_session_id,
+                _override_messages=override_messages,
+                _persist_history=persist
+            )
+
+        sub_content = sub_response.content if sub_response.content else ""
+        if sub_content:
+            if stream_events:
+                yield {"type": "content", "delta": sub_content}
+            else:
+                yield sub_content
+
+        yield {
+            "_tool_result": {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"[{target_agent.name}]: {sub_content}"
+            }
+        }
+
+    async def _adispatch_to_subagent(
+        self,
+        target_agent: 'LiteLLMAgent',
+        parent_messages: List[Dict[str, Any]],
+        instructions: Optional[str],
+        tool_call_id: str,
+        session_id: Optional[str],
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Asynchronously dispatch a handoff to a sub-agent and return a tool result dict.
+        """
+        override_messages = self._build_subagent_messages(parent_messages, target_agent, instructions)
+        last_user_msg = next((m["content"] for m in reversed(parent_messages) if m.get("role") == "user"), "Please handle the user's request.")
+        task_prompt = instructions or last_user_msg
+        
+        sub_session_id = str(uuid.uuid4())
+        persist = (self.handoff_memory == "persist")
+        
+        if override_messages is None:
+            adk_logger.info(f"[Handoff:clean] → {target_agent.name}")
+            sub_response = await target_agent.ainvoke(task_prompt, session_id=sub_session_id, _persist_history=persist, **kwargs)
+        else:
+            adk_logger.info(f"[Handoff:{self.handoff_context}] → {target_agent.name}")
+            sub_response = await target_agent.ainvoke(
+                "",
+                session_id=sub_session_id,
+                _override_messages=override_messages,
+                _persist_history=persist,
+                **kwargs
+            )
+        
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": f"[{target_agent.name}]: {sub_response.content}"
+        }
+
+    async def _adispatch_to_subagent_streaming(
+        self,
+        target_agent: 'LiteLLMAgent',
+        parent_messages: List[Dict[str, Any]],
+        instructions: Optional[str],
+        tool_call_id: str,
+        session_id: Optional[str],
+        stream_events: bool,
+        **kwargs
+    ):
+        """
+        Async generator that dispatches a handoff to a sub-agent and streams the result.
+
+        NOTE: Sub-agent is invoked via ainvoke (not astream) to avoid nested async generator
+        short-circuit issues. The sub-agent fully executes all its own tools internally,
+        then the final response is yielded as a streaming content chunk to the parent.
+        This matches industry practice (LangChain, CrewAI, OpenAI Swarm).
+        """
+        override_messages = self._build_subagent_messages(parent_messages, target_agent, instructions)
+        last_user_msg = next((m["content"] for m in reversed(parent_messages) if m.get("role") == "user"), "Please handle the user's request.")
+        task_prompt = instructions or last_user_msg
+
+        sub_session_id = str(uuid.uuid4())
+        persist = (self.handoff_memory == "persist")
+        adk_logger.info(f"[Handoff:{self.handoff_context}] → {target_agent.name} | prompt='{task_prompt[:60]}' | override={override_messages is not None}")
+
+        if override_messages is None:
+            sub_response = await target_agent.ainvoke(task_prompt, session_id=sub_session_id, _persist_history=persist)
+        else:
+            sub_response = await target_agent.ainvoke(
+                "",
+                session_id=sub_session_id,
+                _override_messages=override_messages,
+                _persist_history=persist
+            )
+
+        sub_content = sub_response.content if sub_response.content else ""
+
+        # Stream the sub-agent's response as a content chunk into the parent stream
+        if sub_content:
+            if stream_events:
+                yield {"type": "content", "delta": sub_content}
+            else:
+                yield sub_content
+
+        # Sentinel: signals end of sub-agent stream with the tool result
+        yield {
+            "_tool_result": {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": f"[{target_agent.name}]: {sub_content}"
+            }
+        }
+
 
     def _update_history(self, new_messages: List[Dict[str, Any]], actual_session_id: str):
         """Persist new messages to memory with token counts."""
@@ -350,10 +626,11 @@ class LiteLLMAgent(BaseAgent):
         # Handle Tool Result (Tool Role)
         if role == "tool":
             msg_dict["tool_call_id"] = getattr(message, "tool_call_id", None) if not isinstance(message, dict) else message.get("tool_call_id")
-            # Name is optional but good practice
+            # Cohere and some other strict providers reject "name" in tool responses, although OpenAI recommends it.
             name = getattr(message, "name", None) if not isinstance(message, dict) else message.get("name")
             if name:
-                msg_dict["name"] = name
+                # msg_dict["name"] = name  # We will omit name to be safe across providers.
+                pass
                 
         return msg_dict
 
@@ -411,34 +688,59 @@ class LiteLLMAgent(BaseAgent):
 
     async def _aexecute_tool_with_args(self, tool_name: str, tool_call_id: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Core async tool execution logic."""
+        # Check Approval Status
+        request = self.approval_manager.get_request(tool_call_id)
+        if request:
+            if request.status == ApprovalStatus.REJECTED:
+                return {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": f"Error: Tool call REJECTED by human reviewer. Reason: {request.reason or 'Not specified.'}"
+                }
+            if request.status == ApprovalStatus.MODIFIED:
+                # Use effective args (overridden by human)
+                arguments = self.approval_manager.get_effective_args(tool_call_id, default_args=arguments)
+
+        if tool_name.startswith("transfer_to_"):
+            target_agent = tool_name.replace("transfer_to_", "")
+            if target_agent in self.sub_agents:
+                adk_logger.info(f"Handing off to sub-agent: {target_agent}")
+                raise HandoffAgent(target_agent_name=target_agent, **arguments)
+                
         result = await tool_registry.aexecute(tool_name, **arguments)
         return {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "name": tool_name,
             "content": str(result)
         }
 
-    def _execute_tool(self, tool_call) -> str:
-        """Helper to execute a tool call synchronously."""
-        function_name = self._get_tc_val(tool_call, "function", "name")
-        raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
-        arguments = self._parse_arguments(raw_args)
-        return self._execute_tool_with_args(function_name, arguments)
+    def _execute_tool_with_args(self, tool_name: str, tool_call_id: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Core sync tool execution logic. Returns a standard tool response message."""
+        # Check Approval Status
+        request = self.approval_manager.get_request(tool_call_id)
+        if request:
+            if request.status == ApprovalStatus.REJECTED:
+                return {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": f"Error: Tool call REJECTED by human reviewer. Reason: {request.reason or 'Not specified.'}"
+                }
+            if request.status == ApprovalStatus.MODIFIED:
+                # Use effective args (overridden by human)
+                arguments = self.approval_manager.get_effective_args(tool_call_id, default_args=arguments)
 
-    def _execute_tool_with_args(self, tool_name: str, arguments: Dict[str, Any]) -> str:
-        """Core sync tool execution logic."""
-        return tool_registry.execute(tool_name, **arguments)
-
-    def _parse_arguments(self, args: Any) -> Dict[str, Any]:
-        """Robustly parses tool arguments."""
-        if isinstance(args, dict):
-            return args
-        try:
-            return json.loads(args or "{}")
-        except json.JSONDecodeError:
-            adk_logger.warning(f"Failed to parse tool arguments: {args}")
-            return {}
+        if tool_name.startswith("transfer_to_"):
+            target_agent = tool_name.replace("transfer_to_", "")
+            if target_agent in self.sub_agents:
+                adk_logger.info(f"Handing off to sub-agent: {target_agent}")
+                raise HandoffAgent(target_agent_name=target_agent, **arguments)
+                
+        result = tool_registry.execute(tool_name, **arguments)
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": str(result)
+        }
 
     def _get_tc_val(self, tool_call, attr, subattr=None):
         """Helper to get value from either object or dict tool call."""
@@ -452,6 +754,25 @@ class LiteLLMAgent(BaseAgent):
             if val and subattr:
                 return getattr(val, subattr, None)
             return val
+
+    def _parse_arguments(self, args: Any) -> Dict[str, Any]:
+        """Robustly parses tool arguments."""
+        if isinstance(args, dict):
+            return args
+        try:
+            return json.loads(args or "{}")
+        except json.JSONDecodeError:
+            # RECOVERY: Handle concatenated JSON objects like {"a":1}{"b":2}
+            if isinstance(args, str) and "}{" in args:
+                try:
+                    # Take only the first valid JSON object
+                    decoder = json.JSONDecoder()
+                    arguments, _ = decoder.raw_decode(args)
+                    return arguments
+                except Exception:
+                    pass
+            adk_logger.warning(f"Failed to parse tool arguments: {args}")
+            return {}
 
     def _execute_tool(self, tool_call) -> Any:
         """Helper to execute a tool call and handle JSON parsing."""
@@ -478,6 +799,12 @@ class LiteLLMAgent(BaseAgent):
                 adk_logger.warning(f"Failed to parse tool arguments for {function_name}: {raw_args}")
                 arguments = {}
         
+        if function_name.startswith("transfer_to_"):
+            target_agent = function_name.replace("transfer_to_", "")
+            if target_agent in self.sub_agents:
+                adk_logger.info(f"Handing off to sub-agent: {target_agent}")
+                raise HandoffAgent(target_agent_name=target_agent, **arguments)
+                
         return tool_registry.execute(function_name, **arguments)
 
     def _get_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
@@ -506,7 +833,7 @@ class LiteLLMAgent(BaseAgent):
                     "timeout" in str(e).lower() or 
                     "service_unavailable" in str(e).lower() or
                     "internal_server_error" in str(e).lower() or
-                    isinstance(e, (litellm.RateLimitError, litellm.ServiceUnavailableError, litellm.APIError, litellm.BadRequestError))
+                    isinstance(e, (litellm.RateLimitError, litellm.ServiceUnavailableError, litellm.APIError))
                 )
                 
                 if recoverable and config != configs[-1]:
@@ -555,8 +882,17 @@ class LiteLLMAgent(BaseAgent):
         """
         Execute a synchronous completion with automatic tool calling.
         """
+        _persist_history = kwargs.pop("_persist_history", True)
         actual_session_id = session_id.id if isinstance(session_id, Session) else (session_id or str(uuid.uuid4()))
-        messages = self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        _override_messages = kwargs.pop("_override_messages", None)
+        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        
+        # Inject Vector Context (Sync)
+        if prompt and self.vector_store:
+            context_str = self._retrieve_context_sync(prompt)
+            if context_str:
+                messages.insert(1, {"role": "system", "content": context_str})
+
         tools = tools or self.tools
         new_turns = [] # Track only what's new in this specific call
         accumulated_content = []
@@ -627,25 +963,38 @@ class LiteLLMAgent(BaseAgent):
                     
                     t_id = self._get_tc_val(tool_call, "id")
                     request = self.approval_manager.get_request(t_id)
-                    if request and request.status == ApprovalStatus.REJECTED:
-                        result = f"Error: Tool call REJECTED by human reviewer. Reason: {request.reason or 'Not specified.'}"
-                    elif request and request.status == ApprovalStatus.MODIFIED:
-                        current_raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
-                        current_t_args = self._parse_arguments(current_raw_args)
-                        final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
-                        raw_result = self._execute_tool_with_args(self._get_tc_val(tool_call, "function", "name"), final_args)
-                        # Prefix with context so LLM knows a human changed it
-                        result = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer for safety/compliance] {raw_result}"
-                    else:
-                        current_raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
-                        current_t_args = self._parse_arguments(current_raw_args)
-                        final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
-                        result = self._execute_tool_with_args(self._get_tc_val(tool_call, "function", "name"), final_args)
+                    
+                    try:
+                        if request and request.status == ApprovalStatus.REJECTED:
+                            result = f"Error: Tool call REJECTED by human reviewer. Reason: {request.reason or 'Not specified.'}"
+                        elif request and request.status == ApprovalStatus.MODIFIED:
+                            current_raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
+                            current_t_args = self._parse_arguments(current_raw_args)
+                            final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
+                            raw_result = self._execute_tool_with_args(self._get_tc_val(tool_call, "function", "name"), final_args)
+                            result = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer for safety/compliance] {raw_result}"
+                        else:
+                            current_raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
+                            current_t_args = self._parse_arguments(current_raw_args)
+                            final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
+                            result = self._execute_tool_with_args(self._get_tc_val(tool_call, "function", "name"), final_args)
+                    except HandoffAgent as handoff:
+                        target_agent = self.sub_agents[handoff.target_agent_name]
+                        tool_result = self._dispatch_to_subagent(
+                            target_agent=target_agent,
+                            parent_messages=messages,
+                            instructions=handoff.kwargs.get("instructions"),
+                            tool_call_id=t_id,
+                            session_id=actual_session_id,
+                            **kwargs
+                        )
+                        messages.append(tool_result)
+                        new_turns.append(tool_result)
+                        continue
                     
                     tool_response = {
                         "role": "tool",
                         "tool_call_id": t_id,
-                        "name": self._get_tc_val(tool_call, "function", "name"),
                         "content": str(result)
                     }
                     messages.append(tool_response)
@@ -659,7 +1008,8 @@ class LiteLLMAgent(BaseAgent):
             if final_msg.get("content"):
                  accumulated_content.append(final_msg["content"].strip())
             
-            self._update_history(new_turns, actual_session_id=actual_session_id)
+            if _persist_history:
+                self._update_history(new_turns, actual_session_id=actual_session_id)
             
             return AgentResponse(
                 content=final_msg.get("content") or "",
@@ -672,8 +1022,10 @@ class LiteLLMAgent(BaseAgent):
         """
         Execute an asynchronous completion with automatic tool calling.
         """
+        _persist_history = kwargs.pop("_persist_history", True)
         actual_session_id = session_id.id if isinstance(session_id, Session) else (session_id or str(uuid.uuid4()))
-        messages = self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        _override_messages = kwargs.pop("_override_messages", None)
+        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id)
         
         # Inject Vector Context (Async)
         if prompt and self.vector_store:
@@ -742,68 +1094,61 @@ class LiteLLMAgent(BaseAgent):
                 
                 if self._should_handle_sequentially():
                     for tool_call in tool_calls_to_process:
-                        executed_tool_calls.append(self._sanitize_tool_call(tool_call))
                         t_id = self._get_tc_val(tool_call, "id")
-                        request = self.approval_manager.get_request(t_id)
-                        
-                        if request and request.status == ApprovalStatus.REJECTED:
-                            content = f"Error: Tool call REJECTED by human reviewer. Reason: {request.reason or 'Not specified.'}"
-                            res = {"role": "tool", "tool_call_id": t_id, "name": self._get_tc_val(tool_call, "function", "name"), "content": content}
-                        elif request and request.status == ApprovalStatus.MODIFIED:
-                            current_raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
-                            current_t_args = self._parse_arguments(current_raw_args)
-                            final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
-                            raw_res = await self._aexecute_tool_with_args(self._get_tc_val(tool_call, "function", "name"), t_id, final_args)
-                            # Prefix with context
-                            raw_res["content"] = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer for safety/compliance] {raw_res['content']}"
-                            res = raw_res
-                        else:
-                            current_raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
-                            current_t_args = self._parse_arguments(current_raw_args)
-                            final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
-                            res = await self._aexecute_tool_with_args(self._get_tc_val(tool_call, "function", "name"), t_id, final_args)
-                        messages.append(res)
-                        new_turns.append(res)
+                        try:
+                            result = await self._aexecute_tool(tool_call)
+                            request = self.approval_manager.get_request(t_id)
+                            if request and request.status == ApprovalStatus.REJECTED:
+                                result["content"] = f"Error: Tool call REJECTED by human reviewer. Reason: {request.reason or 'Not specified.'}"
+                            elif request and request.status == ApprovalStatus.MODIFIED:
+                                result["content"] = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer for safety/compliance] {result['content']}"
+                        except HandoffAgent as handoff:
+                            target_agent = self.sub_agents[handoff.target_agent_name]
+                            result = await self._adispatch_to_subagent(
+                                target_agent=target_agent,
+                                parent_messages=messages,
+                                instructions=handoff.kwargs.get("instructions"),
+                                tool_call_id=t_id,
+                                session_id=actual_session_id,
+                                **kwargs
+                            )
+
+                        messages.append(result)
+                        new_turns.append(result)
                 else:
                     # Parallel Execution
                     import asyncio
-                    results = []
-                    for tc in tool_calls_to_process:
-                        executed_tool_calls.append(self._sanitize_tool_call(tc))
-                        t_id = self._get_tc_val(tc, "id")
-                        request = self.approval_manager.get_request(t_id)
-                        
-                        if request and request.status == ApprovalStatus.REJECTED:
-                             results.append({"role": "tool", "tool_call_id": t_id, "name": self._get_tc_val(tc, "function", "name"), "content": f"Error: Tool call REJECTED by human reviewer."})
-                        elif request and request.status == ApprovalStatus.MODIFIED:
-                             current_raw_args = self._get_tc_val(tc, "function", "arguments") or "{}"
-                             current_t_args = self._parse_arguments(current_raw_args)
-                             final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
-                             
-                             async def execute_and_prefix(t_name, t_call_id, args):
-                                 r = await self._aexecute_tool_with_args(t_name, t_call_id, args)
-                                 r["content"] = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer] {r['content']}"
-                                 return r
-                                 
-                             results.append(execute_and_prefix(self._get_tc_val(tc, "function", "name"), t_id, final_args))
-                        else:
-                             current_raw_args = self._get_tc_val(tc, "function", "arguments") or "{}"
-                             current_t_args = self._parse_arguments(current_raw_args)
-                             final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
-                             results.append(self._aexecute_tool_with_args(self._get_tc_val(tc, "function", "name"), t_id, final_args))
-                    
-                    # Gather coroutines
-                    actual_results = await asyncio.gather(*[r for r in results if not isinstance(r, dict)])
-                    
-                    idx = 0
-                    for i in range(len(results)):
-                        if isinstance(results[i], dict):
-                            messages.append(results[i])
-                            new_turns.append(results[i])
-                        else:
-                            messages.append(actual_results[idx])
-                            new_turns.append(actual_results[idx])
-                            idx += 1
+
+                    async def exec_tool_parallel(tc):
+                        t_id_p = self._get_tc_val(tc, "id")
+                        t_name_p = self._get_tc_val(tc, "function", "name")
+                        request = self.approval_manager.get_request(t_id_p)
+                        try:
+                            if request and request.status == ApprovalStatus.REJECTED:
+                                return {"role": "tool", "tool_call_id": t_id_p, "content": f"Error: Tool call REJECTED by human reviewer."}
+                            elif request and request.status == ApprovalStatus.MODIFIED:
+                                cur_raw = self._get_tc_val(tc, "function", "arguments") or "{}"
+                                final_a = self.approval_manager.get_effective_args(t_id_p, default_args=self._parse_arguments(cur_raw))
+                                r = await self._aexecute_tool_with_args(t_name_p, t_id_p, final_a)
+                                r["content"] = f"[HUMAN OVERRIDE] {r['content']}"
+                                return r
+                            else:
+                                return await self._aexecute_tool(tc)
+                        except HandoffAgent as handoff:
+                            target_agent = self.sub_agents[handoff.target_agent_name]
+                            return await self._adispatch_to_subagent(
+                                target_agent=target_agent,
+                                parent_messages=messages,
+                                instructions=handoff.kwargs.get("instructions"),
+                                tool_call_id=t_id_p,
+                                session_id=actual_session_id,
+                                **kwargs
+                            )
+
+                    parallel_results = await asyncio.gather(*[exec_tool_parallel(tc) for tc in tool_calls_to_process])
+                    for res in parallel_results:
+                        messages.append(res)
+                        new_turns.append(res)
                 continue
             
             final_msg = self._sanitize_message(message)
@@ -812,7 +1157,8 @@ class LiteLLMAgent(BaseAgent):
             if final_msg.get("content"):
                  accumulated_content.append(final_msg["content"].strip())
             
-            self._update_history(new_turns, actual_session_id=actual_session_id)
+            if _persist_history:
+                self._update_history(new_turns, actual_session_id=actual_session_id)
             
             return AgentResponse(
                 content=final_msg.get("content") or "",
@@ -825,84 +1171,139 @@ class LiteLLMAgent(BaseAgent):
         Execute a streaming completion with automatic tool calling.
         If stream_events=True, yields structured dictionaries instead of strings.
         """
+        _persist_history = kwargs.pop("_persist_history", True)
         actual_session_id = session_id.id if isinstance(session_id, Session) else (session_id or str(uuid.uuid4()))
-        messages = self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        _override_messages = kwargs.pop("_override_messages", None)
+        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id)
+
+        # Inject Vector Context (Sync)
+        if prompt and self.vector_store:
+            context_str = self._retrieve_context_sync(prompt)
+            if context_str:
+                messages.insert(1, {"role": "system", "content": context_str})
+
         tools = tools or self.tools
         
         new_turns = []
         
         while True:
-            response = self._get_completion(messages=messages, tools=tools, stream=True, **kwargs)
+            # Check for Resume
+            last_msg = messages[-1]
+            is_resume = (not prompt and len(new_turns) == 0 and 
+                        last_msg.get("role") == "assistant" and 
+                        last_msg.get("tool_calls"))
             
-            # Accumulate tool call parts
-            full_content = ""
-            tool_calls_by_index = {} # map of index -> list of SimpleNamespace
-            notified_tools = set()
-
-            for chunk in response:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    full_content += delta.content
-                    yield {"type": "content", "delta": delta.content} if stream_events else delta.content
+            if is_resume:
+                adk_logger.info("Resuming from pending tool calls (stream)...")
+                tool_calls = last_msg.get("tool_calls", [])
+                full_content = last_msg.get("content") or ""
+            else:
+                response = self._get_completion(messages=messages, tools=tools, stream=True, **kwargs)
                 
-                if hasattr(delta, "tool_calls") and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_by_index:
-                            tool_calls_by_index[idx] = []
-                        
-                        last_tc = tool_calls_by_index[idx][-1] if tool_calls_by_index[idx] else None
-                        start_new = False
-                        if last_tc is None:
-                            start_new = True
-                        else:
-                            if tc_delta.function and tc_delta.function.name and last_tc.function.name:
-                                start_new = True
-                            elif tc_delta.id and last_tc.id and tc_delta.id != last_tc.id:
-                                start_new = True
-                        
-                        if start_new:
-                            new_tc = SimpleNamespace(
-                                id=tc_delta.id,
-                                function=SimpleNamespace(
-                                    name=tc_delta.function.name if tc_delta.function else None,
-                                    arguments=tc_delta.function.arguments if tc_delta.function else ""
-                                )
-                            )
-                            tool_calls_by_index[idx].append(new_tc)
-                        else:
-                            if tc_delta.id:
-                                last_tc.id = tc_delta.id
-                            if tc_delta.function:
-                                if tc_delta.function.name:
-                                    last_tc.function.name = (last_tc.function.name or "") + tc_delta.function.name
-                                if tc_delta.function.arguments:
-                                    if last_tc.function.arguments is None:
-                                        last_tc.function.arguments = ""
-                                    last_tc.function.arguments += tc_delta.function.arguments
-                        
-                        # Yield "Thinking" event as soon as name is known
-                        current_tc = tool_calls_by_index[idx][-1]
-                        if current_tc.function.name and idx not in notified_tools:
-                            if stream_events:
-                                yield {"type": "tool_start", "name": current_tc.function.name, "index": idx}
-                            notified_tools.add(idx)
+                # Accumulate tool call parts
+                full_content = ""
+                tool_calls_by_index = {} # map of index -> list of SimpleNamespace
+                notified_tools = set()
 
-            # Build final flat tool calls list
-            tool_calls = []
-            for idx in sorted(tool_calls_by_index.keys()):
-                for tc_obj in tool_calls_by_index[idx]:
-                    if tc_obj.function.name:
-                        tool_calls.append({
-                            "id": tc_obj.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc_obj.function.name,
-                                "arguments": tc_obj.function.arguments
-                            }
-                        })
-  
+                for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        full_content += delta.content
+                        if stream_events:
+                            yield {"type": "content", "delta": delta.content}
+                        else:
+                            yield delta.content
+                    
+                    if hasattr(delta, "tool_calls") and delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_calls_by_index:
+                                tool_calls_by_index[idx] = []
+                            
+                            last_tc = tool_calls_by_index[idx][-1] if tool_calls_by_index[idx] else None
+                            start_new = False
+                            if last_tc is None:
+                                start_new = True
+                            else:
+                                if tc_delta.function and tc_delta.function.name and last_tc.function.name:
+                                    start_new = True
+                                elif tc_delta.id and last_tc.id and tc_delta.id != last_tc.id:
+                                    start_new = True
+                            
+                            if start_new:
+                                new_tc = SimpleNamespace(
+                                    id=tc_delta.id,
+                                    function=SimpleNamespace(
+                                        name=tc_delta.function.name if tc_delta.function else None,
+                                        arguments=tc_delta.function.arguments if tc_delta.function else ""
+                                    )
+                                )
+                                tool_calls_by_index[idx].append(new_tc)
+                            else:
+                                if tc_delta.id:
+                                    last_tc.id = tc_delta.id
+                                if tc_delta.function:
+                                    if tc_delta.function.name:
+                                        last_tc.function.name = (last_tc.function.name or "") + tc_delta.function.name
+                                    if tc_delta.function.arguments:
+                                        if last_tc.function.arguments is None:
+                                            last_tc.function.arguments = ""
+                                        last_tc.function.arguments += tc_delta.function.arguments
+                            
+                            # Yield "Thinking" event as soon as name is known
+                            current_tc = tool_calls_by_index[idx][-1]
+                            if current_tc.function.name and idx not in notified_tools:
+                                if stream_events:
+                                    yield {"type": "tool_start", "name": current_tc.function.name, "index": idx}
+                                notified_tools.add(idx)
+
+                # Build final flat tool calls list
+                tool_calls = []
+                for idx in sorted(tool_calls_by_index.keys()):
+                    for tc_obj in tool_calls_by_index[idx]:
+                        if tc_obj.function.name:
+                            tool_calls.append({
+                                "id": tc_obj.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc_obj.function.name,
+                                    "arguments": tc_obj.function.arguments
+                                }
+                            })
             if tool_calls:
+                # HITL APPROVAL CHECK
+                pending_requests = []
+                for tc in tool_calls:
+                    t_name = self._get_tc_val(tc, "function", "name")
+                    t_id = self._get_tc_val(tc, "id")
+                    t_args = self._parse_arguments(self._get_tc_val(tc, "function", "arguments"))
+                    
+                    request = self.approval_manager.get_request(t_id)
+                    if not request:
+                        if self._should_require_approval(t_name, t_args):
+                            request = self.approval_manager.create_request(t_id, actual_session_id, t_name, t_args)
+                    
+                    if request and request.status == ApprovalStatus.PENDING:
+                        pending_requests.append(request)
+
+                if pending_requests:
+                    # Persist assistant msg so we can resume later
+                    assistant_msg = self._sanitize_message({"role": "assistant", "tool_calls": tool_calls, "content": full_content})
+                    if assistant_msg not in messages:
+                        messages.append(assistant_msg)
+                        new_turns.append(assistant_msg)
+                    if _persist_history:
+                        self._update_history(new_turns, actual_session_id=actual_session_id)
+                    
+                    yield {
+                        "type": "requires_approval",
+                        "pending_approvals": [r.model_dump(mode='json') for r in pending_requests],
+                        "session_id": actual_session_id
+                    }
+                    return
+
                 if self._should_handle_sequentially():
                     tool_calls = [tool_calls[0]]
   
@@ -913,26 +1314,46 @@ class LiteLLMAgent(BaseAgent):
                 # Execute sequentially (sync stream is always sequential execution in practice for simplicity)
                 for tool_call in tool_calls:
                     t_name = tool_call["function"]["name"]
-                    result = self._execute_tool(tool_call)
+                    t_id = tool_call["id"]
+                    tool_result_val = None
+                    try:
+                        result = self._execute_tool(tool_call)
+                        tool_result_val = {
+                            "role": "tool",
+                            "tool_call_id": t_id,
+                            "content": str(result)
+                        }
+                    except HandoffAgent as handoff:
+                        target_agent = self.sub_agents[handoff.target_agent_name]
+                        tool_result_val = None
+                        for chunk in self._dispatch_to_subagent_sync_streaming(
+                            target_agent=target_agent,
+                            parent_messages=messages,
+                            instructions=handoff.kwargs.get("instructions"),
+                            tool_call_id=t_id,
+                            session_id=actual_session_id,
+                            stream_events=stream_events,
+                            **kwargs
+                        ):
+                            sentinel = chunk.get("_tool_result") if isinstance(chunk, dict) else None
+                            if sentinel is not None:
+                                tool_result_val = sentinel
+                            else:
+                                yield chunk
                     
                     if stream_events:
-                         yield {"type": "tool_end", "name": t_name, "result": str(result)}
+                        yield {"type": "tool_end", "name": t_name, "result": str(tool_result_val["content"])}
                          
-                    tool_resp = {
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "name": t_name,
-                        "content": str(result)
-                    }
-                    messages.append(tool_resp)
-                    new_turns.append(tool_resp)
+                    messages.append(tool_result_val)
+                    new_turns.append(tool_result_val)
                 
                 continue
             
             final_msg = self._sanitize_message({"role": "assistant", "content": full_content})
             messages.append(final_msg)
             new_turns.append(final_msg)
-            self._update_history(new_turns, actual_session_id=actual_session_id)
+            if _persist_history:
+                self._update_history(new_turns, actual_session_id=actual_session_id)
             return
 
     async def astream(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, stream_events: bool = False, **kwargs) -> AsyncGenerator[Union[str, Dict[str, Any]], None]:
@@ -940,8 +1361,10 @@ class LiteLLMAgent(BaseAgent):
         Execute an asynchronous streaming completion with automatic tool calling.
         If stream_events=True, yields structured dictionaries instead of strings.
         """
+        _persist_history = kwargs.pop("_persist_history", True)
         actual_session_id = session_id.id if isinstance(session_id, Session) else (session_id or str(uuid.uuid4()))
-        messages = self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        _override_messages = kwargs.pop("_override_messages", None)
+        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id)
         
         # Inject Vector Context (Async)
         if prompt and self.vector_store:
@@ -953,75 +1376,122 @@ class LiteLLMAgent(BaseAgent):
         new_turns = []
         
         while True:
-            response = await self._aget_completion(messages=messages, tools=tools, stream=True, **kwargs)
+            # RESUME LOGIC
+            last_msg = messages[-1]
+            is_resume = (not prompt and len(new_turns) == 0 and 
+                        last_msg.get("role") == "assistant" and 
+                        last_msg.get("tool_calls"))
             
-            full_content = ""
-            tool_calls_by_index = {}
-            notified_tools = set()
-
-            async for chunk in response:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    full_content += delta.content
-                    yield {"type": "content", "delta": delta.content} if stream_events else delta.content
+            if is_resume:
+                adk_logger.info("Resuming from pending tool calls (astream)...")
+                tool_calls = last_msg.get("tool_calls", [])
+                full_content = last_msg.get("content") or ""
+            else:
+                response = await self._aget_completion(messages=messages, tools=tools, stream=True, **kwargs)
                 
-                if hasattr(delta, "tool_calls") and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_by_index:
-                            tool_calls_by_index[idx] = []
-                        
-                        last_tc = tool_calls_by_index[idx][-1] if tool_calls_by_index[idx] else None
-                        start_new = False
-                        if last_tc is None:
-                            start_new = True
-                        else:
-                            if tc_delta.function and tc_delta.function.name and last_tc.function.name:
-                                start_new = True
-                            elif tc_delta.id and last_tc.id and tc_delta.id != last_tc.id:
-                                start_new = True
-                        
-                        if start_new:
-                            new_tc = SimpleNamespace(
-                                id=tc_delta.id,
-                                function=SimpleNamespace(
-                                    name=tc_delta.function.name if tc_delta.function else None,
-                                    arguments=tc_delta.function.arguments if tc_delta.function else ""
-                                )
-                            )
-                            tool_calls_by_index[idx].append(new_tc)
-                        else:
-                            if tc_delta.id:
-                                last_tc.id = tc_delta.id
-                            if tc_delta.function:
-                                if tc_delta.function.name:
-                                    last_tc.function.name = (last_tc.function.name or "") + tc_delta.function.name
-                                if tc_delta.function.arguments:
-                                    if last_tc.function.arguments is None:
-                                        last_tc.function.arguments = ""
-                                    last_tc.function.arguments += tc_delta.function.arguments
-                        
-                        # Yield "Thinking" event as soon as name is known
-                        current_tc = tool_calls_by_index[idx][-1]
-                        if current_tc.function.name and idx not in notified_tools:
-                            if stream_events:
-                                yield {"type": "tool_start", "name": current_tc.function.name, "index": idx}
-                            notified_tools.add(idx)
+                full_content = ""
+                tool_calls_by_index = {}
+                notified_tools = set()
 
-            tool_calls = []
-            for idx in sorted(tool_calls_by_index.keys()):
-                for tc_obj in tool_calls_by_index[idx]:
-                    if tc_obj.function.name:
-                        tool_calls.append({
-                            "id": tc_obj.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc_obj.function.name,
-                                "arguments": tc_obj.function.arguments
-                            }
-                        })
-  
+                async for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta.content:
+                        full_content += delta.content
+                        if stream_events:
+                            yield {"type": "content", "delta": delta.content}
+                        else:
+                            yield delta.content
+                    
+                    if hasattr(delta, "tool_calls") and delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_calls_by_index:
+                                tool_calls_by_index[idx] = []
+                            
+                            last_tc = tool_calls_by_index[idx][-1] if tool_calls_by_index[idx] else None
+                            start_new = False
+                            if last_tc is None:
+                                start_new = True
+                            else:
+                                if tc_delta.function and tc_delta.function.name and last_tc.function.name:
+                                    start_new = True
+                                elif tc_delta.id and last_tc.id and tc_delta.id != last_tc.id:
+                                    start_new = True
+                            
+                            if start_new:
+                                new_tc = SimpleNamespace(
+                                    id=tc_delta.id,
+                                    function=SimpleNamespace(
+                                        name=tc_delta.function.name if tc_delta.function else None,
+                                        arguments=tc_delta.function.arguments if tc_delta.function else ""
+                                    )
+                                )
+                                tool_calls_by_index[idx].append(new_tc)
+                            else:
+                                if tc_delta.id:
+                                    last_tc.id = tc_delta.id
+                                if tc_delta.function:
+                                    if tc_delta.function.name:
+                                        last_tc.function.name = (last_tc.function.name or "") + tc_delta.function.name
+                                    if tc_delta.function.arguments:
+                                        if last_tc.function.arguments is None:
+                                            last_tc.function.arguments = ""
+                                        last_tc.function.arguments += tc_delta.function.arguments
+                            
+                            # Yield "Thinking" event as soon as name is known
+                            current_tc = tool_calls_by_index[idx][-1]
+                            if current_tc.function.name and idx not in notified_tools:
+                                if stream_events:
+                                    yield {"type": "tool_start", "name": current_tc.function.name, "index": idx}
+                                notified_tools.add(idx)
+
+                tool_calls = []
+                for idx in sorted(tool_calls_by_index.keys()):
+                    for tc_obj in tool_calls_by_index[idx]:
+                        if tc_obj.function.name:
+                            tool_calls.append({
+                                "id": tc_obj.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc_obj.function.name,
+                                    "arguments": tc_obj.function.arguments
+                                }
+                            })
+      
             if tool_calls:
+                # HITL APPROVAL CHECK
+                pending_requests = []
+                for tc in tool_calls:
+                    t_name = self._get_tc_val(tc, "function", "name")
+                    t_id = self._get_tc_val(tc, "id")
+                    t_args = self._parse_arguments(self._get_tc_val(tc, "function", "arguments"))
+                    
+                    request = self.approval_manager.get_request(t_id)
+                    if not request:
+                        if self._should_require_approval(t_name, t_args):
+                            request = self.approval_manager.create_request(t_id, actual_session_id, t_name, t_args)
+                    
+                    if request and request.status == ApprovalStatus.PENDING:
+                        pending_requests.append(request)
+
+                if pending_requests:
+                    # Persist assistant msg so we can resume later
+                    assistant_msg = self._sanitize_message({"role": "assistant", "tool_calls": tool_calls, "content": full_content})
+                    if assistant_msg not in messages:
+                        messages.append(assistant_msg)
+                        new_turns.append(assistant_msg)
+                    if _persist_history:
+                        self._update_history(new_turns, actual_session_id=actual_session_id)
+                    
+                    yield {
+                        "type": "requires_approval",
+                        "pending_approvals": [r.model_dump(mode='json') for r in pending_requests],
+                        "session_id": actual_session_id
+                    }
+                    return
+
                 if self._should_handle_sequentially():
                     tool_calls = [tool_calls[0]]
   
@@ -1032,27 +1502,64 @@ class LiteLLMAgent(BaseAgent):
                 if self._should_handle_sequentially():
                     for tool_call in tool_calls:
                         t_name = tool_call["function"]["name"]
-                        result = await self._aexecute_tool(tool_call)
+                        t_id = tool_call["id"]
+                        try:
+                            result = await self._aexecute_tool(tool_call)
+                        except HandoffAgent as handoff:
+                            target_agent = self.sub_agents[handoff.target_agent_name]
+                            result = None
+                            async for chunk in self._adispatch_to_subagent_streaming(
+                                target_agent=target_agent,
+                                parent_messages=messages,
+                                instructions=handoff.kwargs.get("instructions"),
+                                tool_call_id=t_id,
+                                session_id=actual_session_id,
+                                stream_events=stream_events,
+                                **kwargs
+                            ):
+                                sentinel = chunk.get("_tool_result") if isinstance(chunk, dict) else None
+                                if sentinel is not None:
+                                    result = sentinel
+                                else:
+                                    yield chunk
                         
                         if stream_events:
-                             yield {"type": "tool_end", "name": t_name, "result": str(result["content"])}
+                             yield {"type": "tool_end", "name": t_name, "result": str(result.get("content", "") if isinstance(result, dict) else result)}
 
                         messages.append(result)
                         new_turns.append(result)
                 else:
-                    # Parallel Execution - YIELD AS THEY FINISH
-                    pending = [self._aexecute_tool(tc) for tc in tool_calls]
+                    # Parallel Execution — YIELD AS THEY FINISH
+                    async def exec_tool(tc):
+                        t_name_inner = tc["function"]["name"]
+                        t_id_inner = tc["id"]
+                        try:
+                            res = await self._aexecute_tool(tc)
+                            res["_t_name"] = t_name_inner
+                            return res
+                        except HandoffAgent as handoff:
+                            target_agent = self.sub_agents[handoff.target_agent_name]
+                            res = await self._adispatch_to_subagent(
+                                target_agent=target_agent,
+                                parent_messages=messages,
+                                instructions=handoff.kwargs.get("instructions"),
+                                tool_call_id=t_id_inner,
+                                session_id=actual_session_id,
+                                **kwargs
+                            )
+                            res["_t_name"] = t_name_inner
+                            return res
+
+                    pending = [exec_tool(tc) for tc in tool_calls]
                     results_to_append = []
                     
                     for coro in asyncio.as_completed(pending):
                         res = await coro
-                        t_name = res["name"]
+                        t_name = res.pop("_t_name", "tool")
                         if stream_events:
                             yield {"type": "tool_end", "name": t_name, "result": str(res["content"])}
                         results_to_append.append(res)
                     
-                    # Sort results back to original order for consistent history (optional but cleaner)
-                    # We can use tool_call_id or just append as they come
                     for res in results_to_append:
                         messages.append(res)
                         new_turns.append(res)
@@ -1063,5 +1570,6 @@ class LiteLLMAgent(BaseAgent):
             final_msg = self._sanitize_message({"role": "assistant", "content": full_content})
             messages.append(final_msg)
             new_turns.append(final_msg)
-            self._update_history(new_turns, actual_session_id=actual_session_id)
+            if _persist_history:
+                self._update_history(new_turns, actual_session_id=actual_session_id)
             return
