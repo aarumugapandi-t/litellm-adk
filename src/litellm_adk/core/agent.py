@@ -690,6 +690,7 @@ class LiteLLMAgent(BaseAgent):
         """Core async tool execution logic."""
         # Check Approval Status
         request = self.approval_manager.get_request(tool_call_id)
+        is_modified = False
         if request:
             if request.status == ApprovalStatus.REJECTED:
                 return {
@@ -700,6 +701,7 @@ class LiteLLMAgent(BaseAgent):
             if request.status == ApprovalStatus.MODIFIED:
                 # Use effective args (overridden by human)
                 arguments = self.approval_manager.get_effective_args(tool_call_id, default_args=arguments)
+                is_modified = True
 
         if tool_name.startswith("transfer_to_"):
             target_agent = tool_name.replace("transfer_to_", "")
@@ -708,16 +710,21 @@ class LiteLLMAgent(BaseAgent):
                 raise HandoffAgent(target_agent_name=target_agent, **arguments)
                 
         result = await tool_registry.aexecute(tool_name, **arguments)
+        content = str(result)
+        if is_modified:
+            content = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer for safety/compliance] {content}"
+            
         return {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": str(result)
+            "content": content
         }
 
     def _execute_tool_with_args(self, tool_name: str, tool_call_id: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Core sync tool execution logic. Returns a standard tool response message."""
         # Check Approval Status
         request = self.approval_manager.get_request(tool_call_id)
+        is_modified = False
         if request:
             if request.status == ApprovalStatus.REJECTED:
                 return {
@@ -728,6 +735,7 @@ class LiteLLMAgent(BaseAgent):
             if request.status == ApprovalStatus.MODIFIED:
                 # Use effective args (overridden by human)
                 arguments = self.approval_manager.get_effective_args(tool_call_id, default_args=arguments)
+                is_modified = True
 
         if tool_name.startswith("transfer_to_"):
             target_agent = tool_name.replace("transfer_to_", "")
@@ -736,10 +744,14 @@ class LiteLLMAgent(BaseAgent):
                 raise HandoffAgent(target_agent_name=target_agent, **arguments)
                 
         result = tool_registry.execute(tool_name, **arguments)
+        content = str(result)
+        if is_modified:
+            content = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer for safety/compliance] {content}"
+
         return {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": str(result)
+            "content": content
         }
 
     def _get_tc_val(self, tool_call, attr, subattr=None):
@@ -960,24 +972,10 @@ class LiteLLMAgent(BaseAgent):
                 
                 for tool_call in tool_calls_to_process:
                     executed_tool_calls.append(self._sanitize_tool_call(tool_call))
-                    
                     t_id = self._get_tc_val(tool_call, "id")
-                    request = self.approval_manager.get_request(t_id)
-                    
+
                     try:
-                        if request and request.status == ApprovalStatus.REJECTED:
-                            result = f"Error: Tool call REJECTED by human reviewer. Reason: {request.reason or 'Not specified.'}"
-                        elif request and request.status == ApprovalStatus.MODIFIED:
-                            current_raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
-                            current_t_args = self._parse_arguments(current_raw_args)
-                            final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
-                            raw_result = self._execute_tool_with_args(self._get_tc_val(tool_call, "function", "name"), final_args)
-                            result = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer for safety/compliance] {raw_result}"
-                        else:
-                            current_raw_args = self._get_tc_val(tool_call, "function", "arguments") or "{}"
-                            current_t_args = self._parse_arguments(current_raw_args)
-                            final_args = self.approval_manager.get_effective_args(t_id, default_args=current_t_args)
-                            result = self._execute_tool_with_args(self._get_tc_val(tool_call, "function", "name"), final_args)
+                        tool_result = self._execute_tool(tool_call)
                     except HandoffAgent as handoff:
                         target_agent = self.sub_agents[handoff.target_agent_name]
                         tool_result = self._dispatch_to_subagent(
@@ -988,18 +986,9 @@ class LiteLLMAgent(BaseAgent):
                             session_id=actual_session_id,
                             **kwargs
                         )
-                        messages.append(tool_result)
-                        new_turns.append(tool_result)
-                        continue
                     
-                    tool_response = {
-                        "role": "tool",
-                        "tool_call_id": t_id,
-                        "content": str(result)
-                    }
-                    messages.append(tool_response)
-                    new_turns.append(tool_response)
-                
+                    messages.append(tool_result)
+                    new_turns.append(tool_result)
                 continue
             
             final_msg = self._sanitize_message(message)
@@ -1097,11 +1086,6 @@ class LiteLLMAgent(BaseAgent):
                         t_id = self._get_tc_val(tool_call, "id")
                         try:
                             result = await self._aexecute_tool(tool_call)
-                            request = self.approval_manager.get_request(t_id)
-                            if request and request.status == ApprovalStatus.REJECTED:
-                                result["content"] = f"Error: Tool call REJECTED by human reviewer. Reason: {request.reason or 'Not specified.'}"
-                            elif request and request.status == ApprovalStatus.MODIFIED:
-                                result["content"] = f"[HUMAN OVERRIDE: Parameters were modified by a reviewer for safety/compliance] {result['content']}"
                         except HandoffAgent as handoff:
                             target_agent = self.sub_agents[handoff.target_agent_name]
                             result = await self._adispatch_to_subagent(
@@ -1121,19 +1105,8 @@ class LiteLLMAgent(BaseAgent):
 
                     async def exec_tool_parallel(tc):
                         t_id_p = self._get_tc_val(tc, "id")
-                        t_name_p = self._get_tc_val(tc, "function", "name")
-                        request = self.approval_manager.get_request(t_id_p)
                         try:
-                            if request and request.status == ApprovalStatus.REJECTED:
-                                return {"role": "tool", "tool_call_id": t_id_p, "content": f"Error: Tool call REJECTED by human reviewer."}
-                            elif request and request.status == ApprovalStatus.MODIFIED:
-                                cur_raw = self._get_tc_val(tc, "function", "arguments") or "{}"
-                                final_a = self.approval_manager.get_effective_args(t_id_p, default_args=self._parse_arguments(cur_raw))
-                                r = await self._aexecute_tool_with_args(t_name_p, t_id_p, final_a)
-                                r["content"] = f"[HUMAN OVERRIDE] {r['content']}"
-                                return r
-                            else:
-                                return await self._aexecute_tool(tc)
+                            return await self._aexecute_tool(tc)
                         except HandoffAgent as handoff:
                             target_agent = self.sub_agents[handoff.target_agent_name]
                             return await self._adispatch_to_subagent(
