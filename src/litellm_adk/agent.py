@@ -8,12 +8,12 @@ from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Union, Callable, Generator, AsyncGenerator
 
 from .base import BaseAgent
-from ..observability.logger import adk_logger
-from ..config.settings import settings
-from ..session import Session
-from ..tools.registry import tool_registry
-from ..memory import BaseMemory, InMemoryMemory
-from ..memory.vector_store import VectorStore
+from .observability.logger import adk_logger
+from .config.settings import settings
+from .session import Session
+from .tools.registry import tool_registry
+from .memory import BaseMemory, InMemoryMemory
+from .memory.vector_store import VectorStore
 from .context import ContextManager
 from .approval import ApprovalManager
 from .models import ApprovalStatus, ApprovalRequest, AgentResponse
@@ -662,7 +662,7 @@ class LiteLLMAgent(BaseAgent):
     def _should_require_approval(self, tool_name: str, arguments: Dict[str, Any]) -> bool:
         """Centralized check for tool approval requirements."""
         # 1. Check registry flag (can be bool OR predicate)
-        from ..tools.registry import tool_registry
+        from .tools.registry import tool_registry
         registry_meta = tool_registry._tools.get(tool_name, {})
         req = registry_meta.get("requires_approval")
         

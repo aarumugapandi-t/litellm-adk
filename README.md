@@ -1,20 +1,14 @@
-# LiteLLM ADK (Agent Development Kit)
+# LiteLLM ADK (Agent Development Kit) v0.3.0
 
-Highly flexible multiservice Agent Development Kit for building AI agents using LiteLLM.
+The LiteLLM ADK is an agent orchestration framework designed for stability, safety, and seamless multi-provider portability. It provides a standardized interface for managing tool execution, session persistence, and multi-agent coordination across various LLM providers (including OpenAI, Anthropic, OCI, and Bedrock).
 
-Built for developers who need to swap models, API keys, and base URLs dynamically while maintaining a robust structure for tool usage, **modular memory persistence**, and observability.
+## Core Capabilities
 
-## Features
-
-- **Model Agnostic**: Access 100+ LLMs (OpenAI, Anthropic, OCI Grok-3, Llama, etc.) seamlessly.
-- **Easy Tools**: Register Python functions with the `@tool` decorator. No manual JSON schema management.
-- **Modular Memory**: Native support for conversation persistence:
-    - `InMemoryMemory`: Fast, ephemeral storage.
-    - `FileMemory`: Simple JSON-based local persistence.
-    - `MongoDBMemory`: Scalable, remote persistence.
-- **Parallel & Sequential Execution**: Built-in support for parallel tool calls with robust stream accumulation.
-- **Dynamic Configuration**: Global defaults via `.env` or per-agent/per-request overrides.
-- **Async & Streaming**: Native support for `ainvoke`, `stream`, and `astream`.
+- **Human-In-The-Loop (HITL)**: Native support for pausing execution for manual approval or parameter modification before tool execution.
+- **Multi-Agent Orchestration**: Standardized handoff protocols for transferring context and control between specialized agents.
+- **Resilient Memory Architecture**: Pluggable storage backends (In-Memory, File, MongoDB) with dedicated session management.
+- **Semantic Memory (RAG)**: Integrated vector store search for automated context retrieval.
+- **Provider Portability**: Automatic parameter filtering to ensure cross-provider compatibility and resilience.
 
 ## Installation
 
@@ -24,52 +18,99 @@ pip install litellm-adk
 
 ## Quick Start
 
-### Simple Conversational Agent
+### Basic Agent Initialization
+
+The ADK manages session history and provider routing automatically.
 
 ```python
-from litellm_adk.agents import LiteLLMAgent
-from litellm_adk.memory import FileMemory
-
-# Setup persistent memory
-memory = FileMemory("chat_history.json")
+from litellm_adk import LiteLLMAgent
 
 agent = LiteLLMAgent(
-    model="gpt-4", 
-    memory=memory,
-    session_id="user-123"
+    model="gpt-4o",
+    system_prompt="You are a helpful assistant."
 )
 
-response = agent.invoke("My name is Alice.")
-print(agent.invoke("What is my name?")) # Alice
+# Synchronous invocation
+response = agent.invoke("Hello! My name is Alice.")
+print(response.content)
+
+# Session persistence is maintained internally
+print(agent.invoke("What is my name?").content) # "Your name is Alice."
 ```
 
-### Registering Tools
+### Tool Registration
+
+Python functions can be converted into LLM-compatible tools using the `@tool` decorator.
 
 ```python
-from litellm_adk.tools import tool
+from litellm_adk import LiteLLMAgent, tool
 
 @tool
-def get_weather(location: str):
-    """Get the current weather for a location."""
-    return f"The weather in {location} is sunny."
+def process_refund(user_id: str, amount: float):
+    """Processes a refund for a specific user."""
+    return f"Successfully refunded ${amount} to user {user_id}."
 
-agent = LiteLLMAgent(tools=[get_weather])
-agent.invoke("What is the weather in London?")
+agent = LiteLLMAgent(tools=[process_refund])
+agent.invoke("Refund $50 to user 123")
+```
+
+## Safety and Control: Human-In-The-Loop
+
+For sensitive operations, tools can be configured to require explicit human approval. The agent will yield a `requires_approval` event and wait for a decision before proceeding.
+
+```python
+@tool(requires_approval=True)
+def delete_database(db_name: str):
+    """Irreversible database operation."""
+    return f"Database {db_name} deleted."
+
+# In a streaming context:
+for event in agent.stream("Delete the 'prod' DB"):
+    if event["type"] == "requires_approval":
+        # Handle the approval request in your application logic
+        print(f"Approval Required for: {event['pending_approvals']}")
+```
+
+## Long-Term Memory: Semantic Search (RAG)
+
+Connect a Vector Store to enable automated context retrieval.
+
+```python
+from litellm_adk.memory.backends.postgres import PostgresVectorStore
+
+vector_store = PostgresVectorStore(connection_string="...")
+agent = LiteLLMAgent(vector_store=vector_store)
+
+# The agent retrieves relevant documents automatically before generating a response
+agent.invoke("What are the core specifications of Project Chimera?")
+```
+
+## Distributed Logic: Agent Handoffs
+
+Transfer execution logic between specialist agents while maintaining context.
+
+```python
+billing_specialist = LiteLLMAgent(name="billing", tools=[process_refund])
+triage_agent = LiteLLMAgent(name="triage", sub_agents=[billing_specialist])
+
+# The triage agent will programmatically transfer to the billing specialist
+triage_agent.invoke("I need to process a refund.")
 ```
 
 ## Configuration
 
-The ADK uses `pydantic-settings`. Configure via `.env`:
+The framework uses `pydantic-settings` for environment-based configuration.
 
-- `ADK_MODEL`: Default model (e.g., `gpt-4o`).
-- `ADK_API_KEY`: Default API key.
-- `ADK_BASE_URL`: Global base URL override.
-- `ADK_LOG_LEVEL`: DEBUG, INFO, etc.
+- `ADK_MODEL`: Default LLM model identifier.
+- `ADK_API_KEY`: Default provider API key.
+- `ADK_BASE_URL`: Global API base URL.
+- `ADK_LOG_LEVEL`: System logging level (DEBUG, INFO, ERROR).
 
-## Documentation
-- [Example: Basic Tools](./examples/demo.py)
-- [Example: Persistent Memory](./examples/memory_demo.py)
+## Documentation and Examples
+Reference implementations can be found in the [examples directory](./examples/):
+- [Multi-agent implementation](./examples/multiagent_demo.py)
+- [HITL streaming logic](./examples/streaming_hitl_demo.py)
+- [Vector store integration](./examples/vector_memory_demo.py)
 
 ## License
-
 MIT

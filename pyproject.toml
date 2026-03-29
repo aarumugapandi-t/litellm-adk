@@ -4,11 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "litellm-adk"
-version = "0.2.2"
-description = "Production-grade multiservice Agent Development Kit"
+version = "0.3.1"
+description = "A portable and resilient Multi-Agent Development Kit for LLM orchestration and safety."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
+
+classifiers = [
+  "Programming Language :: Python :: 3"
+]
+
 dependencies = [
     "litellm>=1.40.0",
     "pydantic>=2.0.0",
@@ -21,13 +26,15 @@ dependencies = [
     "orjson>=3.10.0",
     "sqlalchemy>=2.0.0",
     "sqlparse>=0.4.0",
-    "psycopg2-binary>=2.9.0", # PostgreSQL
-    "pymysql>=1.0.0"          # MySQL
+    "psycopg2-binary>=2.9.0",
+    "pymysql>=1.0.0"
 ]
 
-classifiers = [
-  "Programming Language :: Python :: 3"
-]
+[project.urls]
+Homepage = "https://github.com/aarumugapandi400267/litellm-adk"
+Repository = "https://github.com/aarumugapandi400267/litellm-adk"
+Issues = "https://github.com/aarumugapandi400267/litellm-adk/issues"
+Documentation = "https://github.com/aarumugapandi400267/litellm-adk#readme"
 
 [project.optional-dependencies]
 dev = [

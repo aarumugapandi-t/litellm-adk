@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional, Union
 import logging
-from ..core.agent import LiteLLMAgent
+from ..agent import LiteLLMAgent
 from ..adapters import DatabaseAdapter, SQLAdapter, MongoAdapter
 
 logger = logging.getLogger("litellm_adk.agents.database")

@@ -4,6 +4,7 @@
 env/
 venv/
 PYTHONPATH
+trash/
 
 # Build and Distribution
 dist/
@@ -22,7 +23,6 @@ build_log.txt
 
 # IDEs
 .vscode/
-trash
 .idea/
 Publish.md
 plan

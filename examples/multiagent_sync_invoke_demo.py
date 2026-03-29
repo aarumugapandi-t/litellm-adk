@@ -1,7 +1,7 @@
 import os
 import sys
 from dotenv import load_dotenv
-from litellm_adk.core.agent import LiteLLMAgent
+from litellm_adk.agent import LiteLLMAgent
 from litellm_adk.tools.registry import tool
 
 load_dotenv()
@@ -14,7 +14,7 @@ API_KEY = "sk-1234"
 billing_agent = LiteLLMAgent(
     name="billing_agent_specialist",
     description="Handles refunds and payment issues.",
-    model="openrouter/anthropic/claude-3-haiku",
+    model="openrouter/openrouter/free",
     api_key=API_KEY,
     base_url=PROXY_URL,
     system_prompt="You are the Billing Specialist. If a user asks for a refund, use the process_refund tool."

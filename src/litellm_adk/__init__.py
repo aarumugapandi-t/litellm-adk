@@ -1,4 +1,4 @@
-from .agents import LiteLLMAgent
+from .agent import LiteLLMAgent
 from .session import Session
 from .tools import tool, tool_registry
 from .config.settings import settings

@@ -4,8 +4,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from litellm_adk import LiteLLMAgent, tool, Session
-from litellm_adk.core.models import ApprovalStatus
-from litellm_adk.core.policy import PolicyEngine
+from litellm_adk.models import ApprovalStatus
+from litellm_adk.policy import PolicyEngine
 
 # 1. Define sensitive tools
 @tool

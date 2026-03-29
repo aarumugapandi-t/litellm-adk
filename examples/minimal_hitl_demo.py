@@ -1,7 +1,7 @@
 import asyncio
 from litellm_adk import LiteLLMAgent, tool
 from litellm_adk.memory import FileMemory
-from litellm_adk.core.policy import PolicyEngine
+from litellm_adk.policy import PolicyEngine
 
 # 1. Define tool (Clean definition, no policy logic inside)
 @tool

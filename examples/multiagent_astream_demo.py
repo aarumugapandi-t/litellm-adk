@@ -1,7 +1,7 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-from litellm_adk.core.agent import LiteLLMAgent
+from litellm_adk.agent import LiteLLMAgent
 from litellm_adk.tools.registry import tool
 
 load_dotenv()

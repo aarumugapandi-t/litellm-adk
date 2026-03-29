@@ -3,7 +3,7 @@ import json
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from .models import ApprovalRequest, ApprovalStatus, ApprovalAuditEntry
-from ..observability.logger import adk_logger
+from .observability.logger import adk_logger
 
 class ApprovalManager:
     """
