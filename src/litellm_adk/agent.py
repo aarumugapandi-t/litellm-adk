@@ -3,6 +3,11 @@ import litellm
 import json
 import logging
 import asyncio
+import os
+import requests
+import aiohttp
+import base64
+import mimetypes
 from collections import OrderedDict
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Union, Callable, Generator, AsyncGenerator
@@ -325,7 +330,111 @@ class LiteLLMAgent(BaseAgent):
             return None
 
 
-    def _prepare_messages(self, prompt: str, actual_session_id: str) -> List[Dict[str, Any]]:
+    async def _aauto_process_images(self, images: List[str]) -> List[str]:
+        """
+        Asynchronously processes raw image inputs into data URLs using aiohttp.
+        """
+        async def fetch_one(img, session: aiohttp.ClientSession):
+            if img.startswith("data:"): return img
+            
+            # Handle Local File Paths (Use thread pool for OS file read if needed, but here we just read)
+            if os.path.exists(img) and os.path.isfile(img):
+                try:
+                    mime_type, _ = mimetypes.guess_type(img)
+                    with open(img, "rb") as f:
+                        content = f.read()
+                    if not mime_type or mime_type == "application/octet-stream":
+                        if content.startswith(b'\xff\xd8'): mime_type = "image/jpeg"
+                        elif content.startswith(b'\x89PNG'): mime_type = "image/png"
+                    b64_data = base64.b64encode(content).decode("utf-8")
+                    return f"data:{mime_type or 'image/jpeg'};base64,{b64_data}"
+                except Exception as e:
+                    return img
+
+            # Handle External URLs
+            if img.startswith("http"):
+                try:
+                    async with session.get(img, timeout=10) as response:
+                        if response.status != 200: return img
+                        content = await response.read()
+                        content_type = response.headers.get("Content-Type", "").lower()
+                        generic_types = ["binary/data", "application/octet-stream", "text/plain", ""]
+                        if any(g in content_type for g in generic_types):
+                            if content.startswith(b'\xff\xd8'): content_type = "image/jpeg"
+                            elif content.startswith(b'\x89PNG'): content_type = "image/png"
+                            elif ".png" in img.lower(): content_type = "image/png"
+                            else: content_type = "image/jpeg"
+                        b64_data = base64.b64encode(content).decode("utf-8")
+                        return f"data:{content_type};base64,{b64_data}"
+                except Exception:
+                    return img
+            return img
+
+        async with aiohttp.ClientSession() as session:
+            tasks = [fetch_one(img, session) for img in images]
+            return await asyncio.gather(*tasks)
+
+    def _auto_process_images(self, images: List[str]) -> List[str]:
+        """
+        Processes a list of raw image inputs (local paths or URLs) into specialized content strings.
+        Ensures correct MIME types for provider compatibility (Gemini, etc.) by using magic bytes.
+        """
+        processed = []
+        for img in images:
+            # 1. Skip if already a data URL
+            if img.startswith("data:"):
+                processed.append(img)
+                continue
+            
+            # 2. Handle Local File Paths
+            if os.path.exists(img) and os.path.isfile(img):
+                try:
+                    mime_type, _ = mimetypes.guess_type(img)
+                    with open(img, "rb") as f:
+                        content = f.read()
+                    
+                    # Detect mime type from magic bytes if guessing failed
+                    if not mime_type or mime_type == "application/octet-stream":
+                        if content.startswith(b'\xff\xd8'): mime_type = "image/jpeg"
+                        elif content.startswith(b'\x89PNG'): mime_type = "image/png"
+                    
+                    b64_data = base64.b64encode(content).decode("utf-8")
+                    processed.append(f"data:{mime_type or 'image/jpeg'};base64,{b64_data}")
+                    continue
+                except Exception as e:
+                    adk_logger.warning(f"Failed to process local image {img}: {e}")
+                    processed.append(img)
+                    continue
+
+            # 3. Handle External URLs (Pre-process for Gemini stability)
+            if img.startswith("http"):
+                try:
+                    response = requests.get(img, timeout=10)
+                    response.raise_for_status()
+                    
+                    content_type = response.headers.get("Content-Type", "").lower()
+                    generic_types = ["binary/data", "application/octet-stream", "text/plain", ""]
+                    
+                    # Correct generic or missing content types
+                    if any(g in content_type for g in generic_types):
+                        if response.content.startswith(b'\xff\xd8'): content_type = "image/jpeg"
+                        elif response.content.startswith(b'\x89PNG'): content_type = "image/png"
+                        elif ".png" in img.lower(): content_type = "image/png"
+                        else: content_type = "image/jpeg"
+                    
+                    b64_data = base64.b64encode(response.content).decode("utf-8")
+                    processed.append(f"data:{content_type};base64,{b64_data}")
+                    continue
+                except Exception as e:
+                    adk_logger.debug(f"Image fetch skipped for {img}: {e}")
+                    processed.append(img)
+                    continue
+            
+            # Fallback
+            processed.append(img)
+        return processed
+
+    def _prepare_messages(self, prompt: str, actual_session_id: str, images: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Build the message list for an LLM call from persistent memory."""
         # Fetch/Initialize History from Persistent Memory
         history = self.memory.get_messages(actual_session_id)
@@ -335,8 +444,20 @@ class LiteLLMAgent(BaseAgent):
             history = [{"role": "system", "content": self.system_prompt}]
             
         messages = history.copy()
-        if prompt:
-            user_msg = {"role": "user", "content": prompt}
+        if prompt or images:
+            if images:
+                content = []
+                if prompt:
+                    content.append({"type": "text", "text": prompt})
+                
+                # Automatically process images for "comfort" (files + URLs + MIME fixing)
+                processed_images = self._auto_process_images(images)
+                for img_data in processed_images:
+                    content.append({"type": "image_url", "image_url": {"url": img_data}})
+                user_msg = {"role": "user", "content": content}
+            else:
+                user_msg = {"role": "user", "content": prompt}
+                
             messages.append(user_msg)
             
             # Persist turn start
@@ -358,6 +479,39 @@ class LiteLLMAgent(BaseAgent):
                 self.max_context_tokens
             )
             
+        return messages
+
+    async def _aprepare_messages(self, prompt: str, actual_session_id: str, images: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Async version of _prepare_messages to ensure non-blocking image processing."""
+        history = self.memory.get_messages(actual_session_id)
+        is_new_session = not history
+        if is_new_session:
+            history = [{"role": "system", "content": self.system_prompt}]
+        messages = history.copy()
+        
+        if prompt or images:
+            if images:
+                content = []
+                if prompt: content.append({"type": "text", "text": prompt})
+                processed_images = await self._aauto_process_images(images)
+                for img_data in processed_images:
+                    content.append({"type": "image_url", "image_url": {"url": img_data}})
+                user_msg = {"role": "user", "content": content}
+            else:
+                user_msg = {"role": "user", "content": prompt}
+            
+            messages.append(user_msg)
+            current_user_msg = self._sanitize_message(user_msg)
+            current_user_msg["token_count"] = ContextManager.count_tokens([current_user_msg], self.model)
+            if is_new_session:
+                system_msg = self._sanitize_message(messages[0])
+                system_msg["token_count"] = ContextManager.count_tokens([system_msg], self.model)
+                self.memory.add_messages(actual_session_id, [system_msg, current_user_msg])
+            else:
+                self.memory.add_message(actual_session_id, current_user_msg)
+        
+        if self.max_context_tokens:
+            messages = ContextManager.truncate_history(messages, self.model, self.max_context_tokens)
         return messages
 
     def _build_subagent_messages(
@@ -890,14 +1044,14 @@ class LiteLLMAgent(BaseAgent):
                 raise e
         raise last_err
 
-    def invoke(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, **kwargs) -> Union['AgentResponse', Dict[str, Any]]:
+    def invoke(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, images: Optional[List[str]] = None, **kwargs) -> Union['AgentResponse', Dict[str, Any]]:
         """
         Execute a synchronous completion with automatic tool calling.
         """
         _persist_history = kwargs.pop("_persist_history", True)
         actual_session_id = session_id.id if isinstance(session_id, Session) else (session_id or str(uuid.uuid4()))
         _override_messages = kwargs.pop("_override_messages", None)
-        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id, images=images)
         
         # Inject Vector Context (Sync)
         if prompt and self.vector_store:
@@ -1007,14 +1161,14 @@ class LiteLLMAgent(BaseAgent):
                 session_id=actual_session_id
             )
 
-    async def ainvoke(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, **kwargs) -> Union['AgentResponse', Dict[str, Any]]:
+    async def ainvoke(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, images: Optional[List[str]] = None, **kwargs) -> Union['AgentResponse', Dict[str, Any]]:
         """
         Execute an asynchronous completion with automatic tool calling.
         """
         _persist_history = kwargs.pop("_persist_history", True)
         actual_session_id = session_id.id if isinstance(session_id, Session) else (session_id or str(uuid.uuid4()))
         _override_messages = kwargs.pop("_override_messages", None)
-        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        messages = _override_messages if _override_messages is not None else await self._aprepare_messages(prompt, actual_session_id=actual_session_id, images=images)
         
         # Inject Vector Context (Async)
         if prompt and self.vector_store:
@@ -1139,7 +1293,7 @@ class LiteLLMAgent(BaseAgent):
                 tool_calls=executed_tool_calls,
                 session_id=actual_session_id
             )
-    def stream(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, stream_events: bool = False, **kwargs) -> Generator[Union[str, Dict[str, Any]], None, None]:
+    def stream(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, stream_events: bool = False, images: Optional[List[str]] = None, **kwargs) -> Generator[Union[str, Dict[str, Any]], None, None]:
         """
         Execute a streaming completion with automatic tool calling.
         If stream_events=True, yields structured dictionaries instead of strings.
@@ -1147,7 +1301,7 @@ class LiteLLMAgent(BaseAgent):
         _persist_history = kwargs.pop("_persist_history", True)
         actual_session_id = session_id.id if isinstance(session_id, Session) else (session_id or str(uuid.uuid4()))
         _override_messages = kwargs.pop("_override_messages", None)
-        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id, images=images)
 
         # Inject Vector Context (Sync)
         if prompt and self.vector_store:
@@ -1329,7 +1483,7 @@ class LiteLLMAgent(BaseAgent):
                 self._update_history(new_turns, actual_session_id=actual_session_id)
             return
 
-    async def astream(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, stream_events: bool = False, **kwargs) -> AsyncGenerator[Union[str, Dict[str, Any]], None]:
+    async def astream(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, stream_events: bool = False, images: Optional[List[str]] = None, **kwargs) -> AsyncGenerator[Union[str, Dict[str, Any]], None]:
         """
         Execute an asynchronous streaming completion with automatic tool calling.
         If stream_events=True, yields structured dictionaries instead of strings.
@@ -1337,7 +1491,7 @@ class LiteLLMAgent(BaseAgent):
         _persist_history = kwargs.pop("_persist_history", True)
         actual_session_id = session_id.id if isinstance(session_id, Session) else (session_id or str(uuid.uuid4()))
         _override_messages = kwargs.pop("_override_messages", None)
-        messages = _override_messages if _override_messages is not None else self._prepare_messages(prompt, actual_session_id=actual_session_id)
+        messages = _override_messages if _override_messages is not None else await self._aprepare_messages(prompt, actual_session_id=actual_session_id, images=images)
         
         # Inject Vector Context (Async)
         if prompt and self.vector_store:
