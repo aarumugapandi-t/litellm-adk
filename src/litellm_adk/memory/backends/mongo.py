@@ -61,19 +61,24 @@ class MongoVectorStore(VectorStore):
             
         return ids
 
-    async def search(self, query: str, k: int = 4) -> List[Dict[str, Any]]:
+    async def search(self, query: str, k: int = 4, score_threshold: Optional[float] = None, filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         query_embedding = (await self._get_embeddings([query]))[0]
         
         # Atlas Vector Search Aggregation Pipeline
+        search_stage = {
+            "index": self.index_name,
+            "path": "embedding",
+            "queryVector": query_embedding,
+            "numCandidates": k * 10,
+            "limit": k
+        }
+        
+        if filter:
+            search_stage["filter"] = filter
+
         pipeline = [
             {
-                "$vectorSearch": {
-                    "index": self.index_name,
-                    "path": "embedding",
-                    "queryVector": query_embedding,
-                    "numCandidates": k * 10,
-                    "limit": k
-                }
+                "$vectorSearch": search_stage
             },
             {
                 "$project": {

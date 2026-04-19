@@ -2,7 +2,13 @@ from .agent import LiteLLMAgent
 from .session import Session
 from .tools import tool, tool_registry
 from .config.settings import settings
-from .memory import BaseMemory, InMemoryMemory, FileMemory, MongoDBMemory
+from .memory import (
+    BaseMemory, 
+    InMemoryMemory, 
+    FileMemory, 
+    MongoDBMemory, 
+    SQLAlchemyMemory
+)
 
 __all__ = [
     "LiteLLMAgent", 
@@ -13,5 +19,6 @@ __all__ = [
     "BaseMemory", 
     "InMemoryMemory", 
     "FileMemory", 
-    "MongoDBMemory"
+    "MongoDBMemory",
+    "SQLAlchemyMemory"
 ]

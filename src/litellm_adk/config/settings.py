@@ -23,10 +23,16 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     cohere_api_key: Optional[str] = None
     
-    # Logging
+    # Logging & Observability
     log_level: str = Field(default="INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
-    
-    # Agent Defaults
+    log_format: str = Field(default="text", description="Log format (text or json)")
+    enable_telemetry: bool = Field(default=False, description="Enable OpenTelemetry tracing")
+    otel_exporter_endpoint: Optional[str] = Field(default=None, description="OTLP exporter endpoint")
+
+    # Tool Execution
     sequential_execution: bool = Field(default=True, description="Default sequential tool execution mode.")
+    tool_timeout: float = Field(default=30.0, description="Maximum execution time (seconds) for a single tool call.")
+    tool_error_policy: str = Field(default="raise", description="Policy for tool failures: 'raise' or 'return_to_llm'.")
+    max_tokens: int = Field(default=4096, description="Default max tokens for LLM responses.")
 
 settings = Settings()

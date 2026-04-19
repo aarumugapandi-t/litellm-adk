@@ -32,6 +32,12 @@ class ApprovalAuditEntry(BaseModel):
     reason: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+class UsageInfo(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
+
 class AgentResponse(BaseModel):
     """
     Structured response from an agent invocation.
@@ -41,6 +47,7 @@ class AgentResponse(BaseModel):
     accumulated_content: str = Field(..., description="The full concatenated text including intermediate thoughts.")
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list, description="Tools executed during this turn.")
     session_id: str
+    usage: UsageInfo = Field(default_factory=UsageInfo)
     
     def __str__(self):
         """Default to the full accumulated content for convenient printing."""

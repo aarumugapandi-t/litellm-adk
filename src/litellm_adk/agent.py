@@ -14,6 +14,7 @@ from typing import List, Dict, Any, Optional, Union, Callable, Generator, AsyncG
 
 from .base import BaseAgent
 from .observability.logger import adk_logger
+from .observability.telemetry import trace_span
 from .config.settings import settings
 from .session import Session
 from .tools.registry import tool_registry
@@ -21,9 +22,10 @@ from .memory import BaseMemory, InMemoryMemory
 from .memory.vector_store import VectorStore
 from .context import ContextManager
 from .approval import ApprovalManager
-from .models import ApprovalStatus, ApprovalRequest, AgentResponse
+from .models import ApprovalStatus, ApprovalRequest, AgentResponse, UsageInfo
 from .policy import PolicyEngine
 from .handoff import HandoffAgent, HandoffResult
+from .utils.vision import VisionOptimizer
 
 # Global LiteLLM configuration for resilience
 litellm.drop_params = True
@@ -332,118 +334,37 @@ class LiteLLMAgent(BaseAgent):
 
     async def _aauto_process_images(self, images: List[str]) -> List[str]:
         """
-        Asynchronously processes raw image inputs into data URLs using aiohttp.
+        Asynchronously processes raw image inputs into optimized data URLs.
         """
-        async def fetch_one(img, session: aiohttp.ClientSession):
-            if img.startswith("data:"): return img
-            
-            # Handle Local File Paths (Use thread pool for OS file read if needed, but here we just read)
-            if os.path.exists(img) and os.path.isfile(img):
-                try:
-                    mime_type, _ = mimetypes.guess_type(img)
-                    with open(img, "rb") as f:
-                        content = f.read()
-                    if not mime_type or mime_type == "application/octet-stream":
-                        if content.startswith(b'\xff\xd8'): mime_type = "image/jpeg"
-                        elif content.startswith(b'\x89PNG'): mime_type = "image/png"
-                    b64_data = base64.b64encode(content).decode("utf-8")
-                    return f"data:{mime_type or 'image/jpeg'};base64,{b64_data}"
-                except Exception as e:
-                    return img
-
-            # Handle External URLs
-            if img.startswith("http"):
-                try:
-                    async with session.get(img, timeout=10) as response:
-                        if response.status != 200: return img
-                        content = await response.read()
-                        content_type = response.headers.get("Content-Type", "").lower()
-                        generic_types = ["binary/data", "application/octet-stream", "text/plain", ""]
-                        if any(g in content_type for g in generic_types):
-                            if content.startswith(b'\xff\xd8'): content_type = "image/jpeg"
-                            elif content.startswith(b'\x89PNG'): content_type = "image/png"
-                            elif ".png" in img.lower(): content_type = "image/png"
-                            else: content_type = "image/jpeg"
-                        b64_data = base64.b64encode(content).decode("utf-8")
-                        return f"data:{content_type};base64,{b64_data}"
-                except Exception:
-                    return img
-            return img
-
         async with aiohttp.ClientSession() as session:
-            tasks = [fetch_one(img, session) for img in images]
+            tasks = [VisionOptimizer.process_image(img, session) for img in images]
             return await asyncio.gather(*tasks)
 
     def _auto_process_images(self, images: List[str]) -> List[str]:
         """
-        Processes a list of raw image inputs (local paths or URLs) into specialized content strings.
-        Ensures correct MIME types for provider compatibility (Gemini, etc.) by using magic bytes.
+        Processes a list of raw image inputs (local paths or URLs) into optimized data URLs.
         """
-        processed = []
-        for img in images:
-            # 1. Skip if already a data URL
-            if img.startswith("data:"):
-                processed.append(img)
-                continue
-            
-            # 2. Handle Local File Paths
-            if os.path.exists(img) and os.path.isfile(img):
-                try:
-                    mime_type, _ = mimetypes.guess_type(img)
-                    with open(img, "rb") as f:
-                        content = f.read()
-                    
-                    # Detect mime type from magic bytes if guessing failed
-                    if not mime_type or mime_type == "application/octet-stream":
-                        if content.startswith(b'\xff\xd8'): mime_type = "image/jpeg"
-                        elif content.startswith(b'\x89PNG'): mime_type = "image/png"
-                    
-                    b64_data = base64.b64encode(content).decode("utf-8")
-                    processed.append(f"data:{mime_type or 'image/jpeg'};base64,{b64_data}")
-                    continue
-                except Exception as e:
-                    adk_logger.warning(f"Failed to process local image {img}: {e}")
-                    processed.append(img)
-                    continue
+        try:
+            return asyncio.run(self._aauto_process_images(images))
+        except Exception as e:
+            adk_logger.warning(f"Sync image processing failed: {e}")
+            return images
 
-            # 3. Handle External URLs (Pre-process for Gemini stability)
-            if img.startswith("http"):
-                try:
-                    response = requests.get(img, timeout=10)
-                    response.raise_for_status()
-                    
-                    content_type = response.headers.get("Content-Type", "").lower()
-                    generic_types = ["binary/data", "application/octet-stream", "text/plain", ""]
-                    
-                    # Correct generic or missing content types
-                    if any(g in content_type for g in generic_types):
-                        if response.content.startswith(b'\xff\xd8'): content_type = "image/jpeg"
-                        elif response.content.startswith(b'\x89PNG'): content_type = "image/png"
-                        elif ".png" in img.lower(): content_type = "image/png"
-                        else: content_type = "image/jpeg"
-                    
-                    b64_data = base64.b64encode(response.content).decode("utf-8")
-                    processed.append(f"data:{content_type};base64,{b64_data}")
-                    continue
-                except Exception as e:
-                    adk_logger.debug(f"Image fetch skipped for {img}: {e}")
-                    processed.append(img)
-                    continue
-            
-            # Fallback
-            processed.append(img)
-        return processed
-
+    @trace_span("agent.prepare_messages")
     def _prepare_messages(self, prompt: str, actual_session_id: str, images: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Build the message list for an LLM call from persistent memory."""
-        # Fetch/Initialize History from Persistent Memory
-        history = self.memory.get_messages(actual_session_id)
+        try:
+            # Sync wrapper for async memory retrieval
+            history = asyncio.run(self.memory.get_messages(actual_session_id))
+        except Exception as e:
+            adk_logger.warning(f"Sync memory retrieval failed: {e}")
+            history = []
+
         is_new_session = not history
-        
         if is_new_session:
             history = [{"role": "system", "content": self.system_prompt}]
-            
         messages = history.copy()
+        
         if prompt or images:
             if images:
                 content = []
@@ -457,33 +378,33 @@ class LiteLLMAgent(BaseAgent):
                 user_msg = {"role": "user", "content": content}
             else:
                 user_msg = {"role": "user", "content": prompt}
-                
+            
             messages.append(user_msg)
             
-            # Persist turn start
+            # Persistent Storage for User Message
             current_user_msg = self._sanitize_message(user_msg)
             current_user_msg["token_count"] = ContextManager.count_tokens([current_user_msg], self.model)
-            
             if is_new_session:
                 system_msg = self._sanitize_message(messages[0])
                 system_msg["token_count"] = ContextManager.count_tokens([system_msg], self.model)
-                self.memory.add_messages(actual_session_id, [system_msg, current_user_msg])
+                try:
+                    asyncio.run(self.memory.add_messages(actual_session_id, [system_msg, current_user_msg]))
+                except Exception: pass
             else:
-                self.memory.add_message(actual_session_id, current_user_msg)
+                try:
+                    asyncio.run(self.memory.add_message(actual_session_id, current_user_msg))
+                except Exception: pass
         
-        # Context Management (Truncation)
+        # Apply token budget management
         if self.max_context_tokens:
-            messages = ContextManager.truncate_history(
-                messages, 
-                self.model, 
-                self.max_context_tokens
-            )
+            messages = ContextManager.truncate_history(messages, self.model, self.max_context_tokens)
             
         return messages
 
+    @trace_span("agent.prepare_messages_async")
     async def _aprepare_messages(self, prompt: str, actual_session_id: str, images: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Async version of _prepare_messages to ensure non-blocking image processing."""
-        history = self.memory.get_messages(actual_session_id)
+        """Async version of _prepare_messages to ensure non-blocking image processing and memory access."""
+        history = await self.memory.get_messages(actual_session_id)
         is_new_session = not history
         if is_new_session:
             history = [{"role": "system", "content": self.system_prompt}]
@@ -506,9 +427,9 @@ class LiteLLMAgent(BaseAgent):
             if is_new_session:
                 system_msg = self._sanitize_message(messages[0])
                 system_msg["token_count"] = ContextManager.count_tokens([system_msg], self.model)
-                self.memory.add_messages(actual_session_id, [system_msg, current_user_msg])
+                await self.memory.add_messages(actual_session_id, [system_msg, current_user_msg])
             else:
-                self.memory.add_message(actual_session_id, current_user_msg)
+                await self.memory.add_message(actual_session_id, current_user_msg)
         
         if self.max_context_tokens:
             messages = ContextManager.truncate_history(messages, self.model, self.max_context_tokens)
@@ -743,16 +664,34 @@ class LiteLLMAgent(BaseAgent):
 
     def _update_history(self, new_messages: List[Dict[str, Any]], actual_session_id: str):
         """Persist new messages to memory with token counts."""
-        if new_messages:
-            sanitized = []
-            for m in new_messages:
-                s = self._sanitize_message(m)
-                # Compute token count if not already present (optimization for future turns)
-                if "token_count" not in s:
-                    s["token_count"] = ContextManager.count_tokens([s], self.model)
-                sanitized.append(s)
-                
-            self.memory.add_messages(actual_session_id, sanitized)
+        if not new_messages:
+            return
+            
+        sanitized = []
+        for m in new_messages:
+            s = self._sanitize_message(m)
+            if "token_count" not in s:
+                s["token_count"] = ContextManager.count_tokens([s], self.model)
+            sanitized.append(s)
+            
+        try:
+            asyncio.run(self.memory.add_messages(actual_session_id, sanitized))
+        except Exception as e:
+            adk_logger.warning(f"Sync history update failed: {e}")
+
+    async def _aupdate_history(self, new_messages: List[Dict[str, Any]], actual_session_id: str):
+        """Asynchronously persist new messages to memory."""
+        if not new_messages:
+            return
+            
+        sanitized = []
+        for m in new_messages:
+            s = self._sanitize_message(m)
+            if "token_count" not in s:
+                s["token_count"] = ContextManager.count_tokens([s], self.model)
+            sanitized.append(s)
+            
+        await self.memory.add_messages(actual_session_id, sanitized)
 
     def _sanitize_message(self, message: Any) -> Dict[str, Any]:
         """
@@ -831,6 +770,7 @@ class LiteLLMAgent(BaseAgent):
             
         return False
 
+    @trace_span("agent.execute_tool_async")
     async def _aexecute_tool(self, tool_call) -> Dict[str, Any]:
         """Helper to execute a tool call asynchronously and return formatted result."""
         function_name = self._get_tc_val(tool_call, "function", "name")
@@ -940,6 +880,7 @@ class LiteLLMAgent(BaseAgent):
             adk_logger.warning(f"Failed to parse tool arguments: {args}")
             return {}
 
+    @trace_span("agent.execute_tool")
     def _execute_tool(self, tool_call) -> Any:
         """Helper to execute a tool call and handle JSON parsing."""
         function_name = self._get_tc_val(tool_call, "function", "name")
@@ -973,6 +914,7 @@ class LiteLLMAgent(BaseAgent):
                 
         return tool_registry.execute(function_name, **arguments)
 
+    @trace_span("agent.completion")
     def _get_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """Execute a completion call with automatic failover support."""
         configs = [{"model": self.model, "api_key": self.api_key, "base_url": self.base_url}] + self.fallbacks
@@ -1009,6 +951,7 @@ class LiteLLMAgent(BaseAgent):
                 raise e
         raise last_err
 
+    @trace_span("agent.completion_async")
     async def _aget_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """Execute an async completion call with automatic failover support."""
         configs = [{"model": self.model, "api_key": self.api_key, "base_url": self.base_url}] + self.fallbacks
@@ -1044,6 +987,7 @@ class LiteLLMAgent(BaseAgent):
                 raise e
         raise last_err
 
+    @trace_span("agent.invoke")
     def invoke(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, images: Optional[List[str]] = None, **kwargs) -> Union['AgentResponse', Dict[str, Any]]:
         """
         Execute a synchronous completion with automatic tool calling.
@@ -1063,11 +1007,12 @@ class LiteLLMAgent(BaseAgent):
         new_turns = [] # Track only what's new in this specific call
         accumulated_content = []
         executed_tool_calls = []
+        total_usage = UsageInfo()
         
         adk_logger.info(f"Invoking completion for model: {self.model}")
         
         while True:
-            # RESUME LOGIC
+            # Check for Resume from Approval
             last_msg = messages[-1]
             if not prompt and len(new_turns) == 0 and last_msg.get("role") == "assistant" and last_msg.get("tool_calls"):
                 adk_logger.info("Resuming from pending tool calls...")
@@ -1077,6 +1022,14 @@ class LiteLLMAgent(BaseAgent):
                 response = self._get_completion(messages=messages, tools=tools, **kwargs)
                 message = response.choices[0].message
                 tool_calls_from_llm = getattr(message, "tool_calls", [])
+
+                # Update usage
+                if hasattr(response, "usage"):
+                    u = response.usage
+                    total_usage.prompt_tokens += u.get("prompt_tokens", 0)
+                    total_usage.completion_tokens += u.get("completion_tokens", 0)
+                    total_usage.total_tokens += u.get("total_tokens", 0)
+                    total_usage.cost += getattr(response, "_response_cost", 0) or 0
 
             if tool_calls_from_llm:
                 pending_requests = []
@@ -1158,9 +1111,11 @@ class LiteLLMAgent(BaseAgent):
                 content=final_msg.get("content") or "",
                 accumulated_content="\n".join(accumulated_content),
                 tool_calls=executed_tool_calls,
-                session_id=actual_session_id
+                session_id=actual_session_id,
+                usage=total_usage
             )
 
+    @trace_span("agent.invoke_async")
     async def ainvoke(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, images: Optional[List[str]] = None, **kwargs) -> Union['AgentResponse', Dict[str, Any]]:
         """
         Execute an asynchronous completion with automatic tool calling.
@@ -1180,6 +1135,7 @@ class LiteLLMAgent(BaseAgent):
         new_turns = []
         accumulated_content = []
         executed_tool_calls = []
+        total_usage = UsageInfo()
         
         adk_logger.info(f"Invoking async completion for model: {self.model}")
         
@@ -1194,6 +1150,14 @@ class LiteLLMAgent(BaseAgent):
                 response = await self._aget_completion(messages=messages, tools=tools, **kwargs)
                 message = response.choices[0].message
                 tool_calls_from_llm = getattr(message, "tool_calls", [])
+
+                # Update usage
+                if hasattr(response, "usage"):
+                    u = response.usage
+                    total_usage.prompt_tokens += u.get("prompt_tokens", 0)
+                    total_usage.completion_tokens += u.get("completion_tokens", 0)
+                    total_usage.total_tokens += u.get("total_tokens", 0)
+                    total_usage.cost += getattr(response, "_response_cost", 0) or 0
             
             if tool_calls_from_llm:
                 pending_requests = []
@@ -1285,13 +1249,14 @@ class LiteLLMAgent(BaseAgent):
                  accumulated_content.append(final_msg["content"].strip())
             
             if _persist_history:
-                self._update_history(new_turns, actual_session_id=actual_session_id)
+                await self._aupdate_history(new_turns, actual_session_id=actual_session_id)
             
             return AgentResponse(
                 content=final_msg.get("content") or "",
                 accumulated_content="\n".join(accumulated_content),
                 tool_calls=executed_tool_calls,
-                session_id=actual_session_id
+                session_id=actual_session_id,
+                usage=total_usage
             )
     def stream(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, stream_events: bool = False, images: Optional[List[str]] = None, **kwargs) -> Generator[Union[str, Dict[str, Any]], None, None]:
         """
@@ -1610,7 +1575,7 @@ class LiteLLMAgent(BaseAgent):
                         messages.append(assistant_msg)
                         new_turns.append(assistant_msg)
                     if _persist_history:
-                        self._update_history(new_turns, actual_session_id=actual_session_id)
+                        await self._aupdate_history(new_turns, actual_session_id=actual_session_id)
                     
                     yield {
                         "type": "requires_approval",
@@ -1698,5 +1663,31 @@ class LiteLLMAgent(BaseAgent):
             messages.append(final_msg)
             new_turns.append(final_msg)
             if _persist_history:
-                self._update_history(new_turns, actual_session_id=actual_session_id)
+                await self._aupdate_history(new_turns, actual_session_id=actual_session_id)
             return
+
+    async def check_health(self) -> Dict[str, Any]:
+        """
+        Production health check for monitoring.
+        Verifies connectivity to memory and vector store.
+        """
+        health = {"status": "healthy", "components": {}}
+        
+        # Memory Check
+        try:
+            await self.memory.get_messages("health_check_session")
+            health["components"]["memory"] = "ok"
+        except Exception as e:
+            health["status"] = "unhealthy"
+            health["components"]["memory"] = str(e)
+            
+        # Vector Store Check
+        if self.vector_store:
+            try:
+                await self.vector_store.search("health check", k=1)
+                health["components"]["vector_store"] = "ok"
+            except Exception as e:
+                health["status"] = "unhealthy"
+                health["components"]["vector_store"] = str(e)
+        
+        return health

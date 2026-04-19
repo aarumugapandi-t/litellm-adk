@@ -121,20 +121,29 @@ class PostgresVectorStore(VectorStore):
             
         return ids
 
-    async def search(self, query: str, k: int = 4, score_threshold: Optional[float] = None) -> List[Dict[str, Any]]:
+    async def search(self, query: str, k: int = 4, score_threshold: Optional[float] = None, filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         await self._ensure_pool()
         import json
         
         query_embedding = (await self._get_embeddings([query]))[0]
         
         async with self.pool.acquire() as conn:
-            # Cosine distance operator (<=>)
+            # Build query with optional filter
+            filter_query = ""
+            params = [query_embedding, k]
+            
+            if filter:
+                filter_json = json.dumps(filter)
+                filter_query = "WHERE metadata @> $3"
+                params.append(filter_json)
+
             rows = await conn.fetch(f"""
                 SELECT id, text, metadata, 1 - (embedding <=> $1) as score
                 FROM {self.table_name}
+                {filter_query}
                 ORDER BY embedding <=> $1
                 LIMIT $2
-            """, query_embedding, k)
+            """, *params)
             
         results = []
         for row in rows:
