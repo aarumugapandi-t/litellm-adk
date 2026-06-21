@@ -28,5 +28,12 @@ Publish.md
 plan
 enhancement plan.md
 
-#venv
-.litellm-adk
+# Testing & CI
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Databases & Runtime
+*.db
+.litellm-adk/
