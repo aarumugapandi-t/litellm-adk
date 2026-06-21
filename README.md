@@ -39,9 +39,11 @@ import asyncio
 from litellm_adk import LiteLLMAgent
 
 async def main():
-    # Initialize the agent with a target model and system instruction
+    # Initialize the agent explicitly defining the model, proxy route, and credentials
     agent = LiteLLMAgent(
         model="groq/qwen/qwen3-32b",
+        api_key="sk-demo-1234abcd5678efgh",
+        base_url="http://localhost:9000/v1",
         system_prompt="You are a specialized financial assistant."
     )
 
