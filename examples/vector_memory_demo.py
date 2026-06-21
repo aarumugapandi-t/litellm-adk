@@ -50,7 +50,7 @@ async def main():
     async with LiteLLMAgent(
         model="groq/qwen/qwen3-32b",
         api_key="sk-1234",
-        base_url="http://localhost:9000/v2",
+        base_url="http://localhost:9000/v1",
         vector_store=vector_store,
         vector_search_threshold=0.5, # Only include context if similarity score > 0.5
         tools=[get_weather],

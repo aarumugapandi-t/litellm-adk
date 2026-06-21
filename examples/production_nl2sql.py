@@ -33,7 +33,7 @@ async def main():
         # db_url=db_url, # Legacy way still works if db_config is omitted
         model="groq/qwen/qwen3-32b", 
         api_key="sk-1234",
-        base_url="http://localhost:9000/v2",
+        base_url="http://localhost:9000/v1",
         system_prompt="You are a helpful data analyst.",
         return_direct=True,
         schema_config={'exclude_tables': []},

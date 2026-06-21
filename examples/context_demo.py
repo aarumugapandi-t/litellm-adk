@@ -9,9 +9,9 @@ async def main():
         return f"The weather in {city} is sunny."
 
     agent = LiteLLMAgent(
-        model="groq/qwen/qwen3-32b",
+        model="command-a-03-2025",
         api_key="sk-1234",
-        base_url="http://localhost:9000/v2",
+        base_url="http://localhost:9000/v1",
         max_context_tokens=400, # Small limit to trigger context window management
         system_prompt="You are a helpful assistant. Keep your answers brief.",
         tools=[get_weather],

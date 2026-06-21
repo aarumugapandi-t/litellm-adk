@@ -18,16 +18,16 @@ async def calculate_shipping(zip_code: str):
 
 async def main():
     # Detect if we should use a real model or fallback for demo purposes if not configured
-    model = "gemini/gemini-2.5-flash"
+    model="groq/qwen/qwen3-32b"
     api_key = "sk-1234"
-    base_url = "http://localhost:9000/v1"
+    base_url="http://localhost:9000/v1"
 
     agent = LiteLLMAgent(
         model=model,
         api_key=api_key,
         base_url=base_url,
         tools=[check_inventory, calculate_shipping],
-        sequential_tool_calls=True
+        # sequential_tool_calls=True
     )
 
     # --- MOCKING FOR DEMO (Comment out for REAL execution) ---

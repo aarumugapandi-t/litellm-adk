@@ -19,9 +19,9 @@ def process_file(filepath):
         return
         
     if base_url_regex.search(new_content):
-        new_content = base_url_regex.sub('base_url="http://localhost:9000/v2"', new_content)
+        new_content = base_url_regex.sub('base_url="http://localhost:9000/v1"', new_content)
     else:
-        new_content = re.sub(r'(model="groq/qwen/qwen3-32b")', r'\1, base_url="http://localhost:9000/v2"', new_content)
+        new_content = re.sub(r'(model="groq/qwen/qwen3-32b")', r'\1, base_url="http://localhost:9000/v1"', new_content)
 
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(new_content)

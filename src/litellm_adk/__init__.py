@@ -10,6 +10,12 @@ from .memory import (
     SQLAlchemyMemory
 )
 
+from .observability.telemetry import setup_litellm_telemetry
+from .caching import CacheManager
+
+# Initialize opentelemetry automatically
+setup_litellm_telemetry()
+
 __all__ = [
     "LiteLLMAgent", 
     "Session",

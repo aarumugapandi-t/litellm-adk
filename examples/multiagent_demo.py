@@ -35,7 +35,7 @@ account_agent = LiteLLMAgent(
     tools=[get_user_data],
     model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v2"
+    base_url="http://localhost:9000/v1"
 )
 
 billing_agent = LiteLLMAgent(
@@ -45,7 +45,7 @@ billing_agent = LiteLLMAgent(
     tools=[process_refund],
     model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v2"
+    base_url="http://localhost:9000/v1"
 )
 
 # --- 3. Create Primary "Supervisor" Agent ---
@@ -59,7 +59,7 @@ primary_agent = LiteLLMAgent(
     sub_agents=[account_agent, billing_agent],
     model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v2"
+    base_url="http://localhost:9000/v1"
 )
 
 async def main():

@@ -21,7 +21,7 @@ async def run_demo():
     agent = LiteLLMAgent(
         model="groq/qwen/qwen3-32b",
         api_key="sk-1234",
-        base_url="http://localhost:9000/v2",
+        base_url="http://localhost:9000/v1",
         tools=[get_stock_price, get_company_news],
         memory=memory,
         parallel_tool_calls=True

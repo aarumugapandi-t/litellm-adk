@@ -39,6 +39,25 @@ def get_tracer():
         adk_logger.warning("OpenTelemetry components not found. Tracing disabled. Install with 'pip install litellm-adk[telemetry]'")
         return None
 
+def setup_litellm_telemetry():
+    """Configures global LiteLLM telemetry integration."""
+    if not settings.enable_telemetry:
+        return
+        
+    try:
+        import litellm
+        if "opentelemetry" not in (litellm.success_callback or []):
+            litellm.success_callback = litellm.success_callback or []
+            litellm.success_callback.append("opentelemetry")
+            
+        if "opentelemetry" not in (litellm.failure_callback or []):
+            litellm.failure_callback = litellm.failure_callback or []
+            litellm.failure_callback.append("opentelemetry")
+            
+        adk_logger.info("Enabled native LiteLLM OpenTelemetry tracing.")
+    except Exception as e:
+        adk_logger.warning(f"Failed to setup native litellm telemetry: {e}")
+
 def trace_span(name: str):
     """
     A decorator/context manager to wrap functions in an OTEL span.

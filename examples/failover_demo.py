@@ -4,10 +4,10 @@ from litellm_adk import LiteLLMAgent
 async def main():
     # Initialize with a clearly broken model and a valid fallback
     config = {
-        "model": "unsupported-model-name",
+        "model": "groq/qwen/qwen3-32bb",
         "api_key": "sk-1234",
         "base_url": "http://localhost:9000/v1",
-        "fallbacks": ["oci/xai.grok-3"]
+        "fallbacks": ["openrouter/openrouter/free"]
     }
 
     print("--- Failover Demo ---")

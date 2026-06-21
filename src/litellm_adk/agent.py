@@ -28,6 +28,8 @@ from .models import ApprovalStatus, ApprovalRequest, AgentResponse, UsageInfo
 from .policy import PolicyEngine
 from .handoff import HandoffAgent, HandoffResult
 from .utils.vision import VisionOptimizer, BaseVisionCache, SQLiteVisionCache
+from .config.agent_config import AgentConfig
+from .security import PIIScrubber
 
 # Global LiteLLM configuration for resilience
 litellm.drop_params = True
@@ -135,8 +137,38 @@ class LiteLLMAgent(BaseAgent):
         use_global_tools: bool = False,
         approval_manager: Optional[Any] = None,
         vision_cache: Optional[BaseVisionCache] = None,
+        config: Optional['AgentConfig'] = None,
+        scrub_pii: bool = False,
         **kwargs
     ):
+        if config:
+            name = config.name
+            description = config.description
+            model = config.model or model
+            api_key = config.api_key or api_key
+            base_url = config.base_url or base_url
+            system_prompt = config.system_prompt
+            tools = config.tools or tools
+            max_context_tokens = config.max_context_tokens or max_context_tokens
+            fallbacks = config.fallbacks or fallbacks
+            handoff_context = config.handoff_context
+            handoff_memory = config.handoff_memory
+            use_global_tools = config.use_global_tools
+            
+            if config.sub_agents:
+                processed_sub_agents = []
+                for sa in config.sub_agents:
+                    if isinstance(sa, LiteLLMAgent):
+                        processed_sub_agents.append(sa)
+                    elif isinstance(sa, AgentConfig):
+                        processed_sub_agents.append(LiteLLMAgent(config=sa))
+                    elif isinstance(sa, dict):
+                        processed_sub_agents.append(LiteLLMAgent(config=AgentConfig(**sa)))
+                sub_agents = processed_sub_agents
+                
+            scrub_pii = config.scrub_pii
+            kwargs.update(config.extra_kwargs)
+
         self.name = name
         self.description = description
         self.model = model or settings.model
@@ -171,12 +203,18 @@ class LiteLLMAgent(BaseAgent):
             # Only use global registry if explicitly requested
             self.tools = tool_registry.get_tool_definitions() if use_global_tools else []
         else:
-            # Process provided list (can be definitions OR functions)
+            # Process provided list (can be definitions OR functions OR strings)
             processed_tools = []
             for t in tools:
                 if callable(t):
                     # It's a function, register it (if not already) and get definition
                     processed_tools.append(tool_registry._register_function(t))
+                elif isinstance(t, str):
+                    tool_def = tool_registry.get_tool_definition(t)
+                    if tool_def:
+                        processed_tools.append(tool_def)
+                    else:
+                        adk_logger.warning(f"Tool string '{t}' not found in registry.")
                 elif isinstance(t, dict):
                      processed_tools.append(t)
             self.tools = processed_tools
@@ -244,6 +282,8 @@ class LiteLLMAgent(BaseAgent):
         if "parallel_tool_calls" not in self.extra_kwargs:
             self.extra_kwargs["parallel_tool_calls"] = True
             
+        self.scrub_pii = scrub_pii
+            
         # Memory Persistence
         self.memory: BaseMemory = memory or resolved_memory
         self.max_context_tokens = max_context_tokens
@@ -262,6 +302,35 @@ class LiteLLMAgent(BaseAgent):
                 self.fallbacks.append(config)
         
         adk_logger.debug(f"Initialized LiteLLMAgent as a service for model={self.model}")
+
+    @classmethod
+    def from_config(cls, config: 'AgentConfig', **kwargs):
+        """
+        Create a LiteLLMAgent instance from an AgentConfig object.
+        """
+        return cls(config=config, **kwargs)
+
+    @classmethod
+    def from_yaml(cls, yaml_path_or_str: str, **kwargs):
+        """
+        Create a LiteLLMAgent instance directly from a YAML file path or YAML string.
+        """
+        import yaml
+        
+        if os.path.exists(yaml_path_or_str):
+            with open(yaml_path_or_str, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+        else:
+            try:
+                data = yaml.safe_load(yaml_path_or_str)
+            except yaml.YAMLError:
+                raise ValueError(f"Could not parse '{yaml_path_or_str}' as a YAML file or valid YAML string.")
+                
+        if not isinstance(data, dict):
+            raise ValueError("YAML data must map to a dictionary.")
+            
+        config = AgentConfig(**data)
+        return cls.from_config(config, **kwargs)
 
     def save_session(self, session: Union[str, Session]):
         """Persist session metadata and state to memory."""
@@ -931,6 +1000,15 @@ class LiteLLMAgent(BaseAgent):
     )
     def _get_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """Execute a completion call with automatic failover support."""
+        if getattr(self, "scrub_pii", False):
+            messages = PIIScrubber.scrub_messages(messages)
+            
+        # Strip ADK-specific internal metadata to prevent strict provider APIs (like Groq) from rejecting the payload
+        clean_messages = []
+        for msg in messages:
+            clean_messages.append({k: v for k, v in msg.items() if k != "token_count"})
+        messages = clean_messages
+            
         configs = [{"model": self.model, "api_key": self.api_key, "base_url": self.base_url}] + self.fallbacks
         
         last_err = None
@@ -974,6 +1052,15 @@ class LiteLLMAgent(BaseAgent):
     )
     async def _aget_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """Execute an async completion call with automatic failover support."""
+        if getattr(self, "scrub_pii", False):
+            messages = PIIScrubber.scrub_messages(messages)
+            
+        # Strip ADK-specific internal metadata to prevent strict provider APIs (like Groq) from rejecting the payload
+        clean_messages = []
+        for msg in messages:
+            clean_messages.append({k: v for k, v in msg.items() if k != "token_count"})
+        messages = clean_messages
+            
         configs = [{"model": self.model, "api_key": self.api_key, "base_url": self.base_url}] + self.fallbacks
         
         last_err = None

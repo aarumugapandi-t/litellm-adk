@@ -21,7 +21,7 @@ agent = LiteLLMAgent(
     name="refund_agent",
     model="groq/qwen/qwen3-32b",
     api_key=API_KEY,
-    base_url="http://localhost:9000/v2",
+    base_url="http://localhost:9000/v1",
     tools=[process_refund],
     system_prompt="You are a refund processing agent. For any refund request, use the process_refund tool."
 )

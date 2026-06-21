@@ -23,7 +23,7 @@ async def main():
     # 3. INITIALIZE PRODUCTION AGENT
     # Using LiteLLM failover pattern and Vision-capable model
     agent = LiteLLMAgent(
-        base_url="http://localhost:9000/v2",
+        base_url="http://localhost:9000/v1",
         api_key="sk-1234",
         model="groq/qwen/qwen3-32b",
         memory=memory,

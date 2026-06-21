@@ -16,7 +16,7 @@ billing_agent = LiteLLMAgent(
     description="Handles refunds and payment issues.",
     model="groq/qwen/qwen3-32b",
     api_key=API_KEY,
-    base_url="http://localhost:9000/v2",
+    base_url="http://localhost:9000/v1",
     system_prompt="You are the Billing Specialist. If a user asks for a refund, use the process_refund tool."
 )
 
@@ -34,7 +34,7 @@ supervisor = LiteLLMAgent(
     description="Primary user-facing agent that triages requests.",
     model="groq/qwen/qwen3-32b",
     api_key=API_KEY,
-    base_url="http://localhost:9000/v2",
+    base_url="http://localhost:9000/v1",
     sub_agents=[billing_agent],
     system_prompt="You are a helpful customer support triage agent. Use transfer_to_billing_agent_specialist if the user has a billing or refund request."
 )

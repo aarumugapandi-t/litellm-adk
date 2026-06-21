@@ -84,6 +84,11 @@ class ToolRegistry:
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         return [t["definition"] for t in self._tools.values()]
 
+    def get_tool_definition(self, name: str) -> Optional[Dict[str, Any]]:
+        if name in self._tools:
+            return self._tools[name]["definition"]
+        return None
+
     def execute(self, name: str, **kwargs) -> Any:
         """
         Synchronous execution of a tool. 

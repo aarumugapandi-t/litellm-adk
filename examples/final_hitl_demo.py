@@ -37,6 +37,7 @@ async def main():
     )
 
     agent = LiteLLMAgent(
+    base_url="http://localhost:9000/v1",
         model="groq/qwen/qwen3-32b", 
         tools=[send_funds, delete_user_account],
         policy_engine=policy
