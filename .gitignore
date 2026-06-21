@@ -27,3 +27,6 @@ build_log.txt
 Publish.md
 plan
 enhancement plan.md
+
+#venv
+.litellm-adk

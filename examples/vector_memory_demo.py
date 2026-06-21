@@ -48,9 +48,9 @@ async def main():
     # 6. Initialize Agent with Vector Store
     # The Agent will automatically use vector_store.search(), which uses the custom provider.
     async with LiteLLMAgent(
-        model="oci/xai.grok-3",
+        model="groq/qwen/qwen3-32b",
         api_key="sk-1234",
-        base_url="http://localhost:9000/v1",
+        base_url="http://localhost:9000/v2",
         vector_store=vector_store,
         vector_search_threshold=0.5, # Only include context if similarity score > 0.5
         tools=[get_weather],

@@ -8,8 +8,8 @@ async def main():
     agent = LiteLLMAgent(
         name="VisionAssistant",
         api_key="sk-1234",
-        base_url="http://localhost:9000/v1",
-        model="gemini/gemini-2.5-flash",
+        base_url="http://localhost:9000/v2",
+        model="groq/qwen/qwen3-32b",
         system_prompt="You are a vision expert. Describe the images provided in detail."
     )
 

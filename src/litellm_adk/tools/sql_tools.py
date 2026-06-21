@@ -1,5 +1,6 @@
 import json
 import logging
+from enum import Enum
 from typing import List, Dict, Any, Optional, Union
 import sqlalchemy
 from sqlalchemy import create_engine, text, inspect
@@ -7,6 +8,12 @@ from sqlalchemy.exc import SQLAlchemyError
 import sqlparse
 
 logger = logging.getLogger("litellm_adk.tools.sql")
+
+class DatabaseAccessLevel(Enum):
+    """Industry-standard role-based access levels for database operations."""
+    READ_ONLY = "read_only"   # DQL only (SELECT, SHOW, etc)
+    READ_WRITE = "read_write" # DQL + DML (INSERT, UPDATE, DELETE)
+    ADMIN = "admin"           # All operations including DDL (CREATE, DROP)
 
 class SQLTools:
     """
@@ -19,12 +26,35 @@ class SQLTools:
         
         Args:
             db_url: Database connection string (SQLAlchemy format).
-            schema_config: Optional config to filter tables.
-                           {'include_tables': ['users'], 'exclude_tables': ['secrets']}
+            schema_config: Optional config to filter tables and set access levels.
+                           {'include_tables': ['users'], 'access_level': DatabaseAccessLevel.READ_ONLY}
         """
         self.db_url = db_url
         self.engine = create_engine(db_url) # Synchronous engine (offloaded by Agent)
         self.schema_config = schema_config or {}
+        
+        # Enforce query restrictions at the driver level
+        @sqlalchemy.event.listens_for(self.engine, "before_cursor_execute")
+        def receive_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+            # Resolve access level, defaulting to secure Read-Only
+            access_level = self.schema_config.get("access_level", DatabaseAccessLevel.READ_ONLY)
+            
+            # Map access levels to safe prefixes
+            if access_level == DatabaseAccessLevel.READ_ONLY:
+                safe_prefixes = ("select", "explain", "describe", "show")
+            elif access_level == DatabaseAccessLevel.READ_WRITE:
+                safe_prefixes = ("select", "explain", "describe", "show", "insert", "update", "delete", "with")
+            elif access_level == DatabaseAccessLevel.ADMIN:
+                safe_prefixes = None # All queries allowed
+            else:
+                safe_prefixes = ("select", "explain", "describe", "show") # Fallback
+            
+            if safe_prefixes is not None:
+                if not statement.lower().lstrip().startswith(safe_prefixes):
+                    logger.error(f"Security Alert: Blocked unauthorized query type: {statement}")
+                    raise Exception(f"Security Exception: Operation not allowed under {access_level.name} access level.")
+                
+        logger.warning(f"SQLTools: Query validation event listener attached. Ensure your database user is also restricted to appropriate permissions in production.")
         
     def get_table_names(self) -> List[str]:
         """Returns a list of all table names."""
@@ -82,22 +112,6 @@ class SQLTools:
             logger.error(f"Schema introspection failed: {e}")
             return "Error: Could not retrieve database schema."
 
-    def validate_sql(self, query: str) -> Union[bool, str]:
-        """
-        Validates SQL for safety.
-        Returns True if safe, or an error string if blocked.
-        """
-        try:
-            parsed = sqlparse.parse(query)
-            for statement in parsed:
-                # Check statement type
-                type_ = statement.get_type().upper()
-                if type_ not in ['SELECT', 'DESCRIBE', 'EXPLAIN', 'SHOW']:
-                    return f"Security Error: Only SELECT queries are allowed. Blocked command type: {type_}"
-        except Exception as e:
-            return f"Validation Error: {e}"
-        return True
-
     def execute_sql_tool(self, query: str) -> str:
         """
         The actual Tool function exposed to the LLM.
@@ -105,10 +119,7 @@ class SQLTools:
         """
         query = query.strip()
         
-        # 1. Validate
-        validation = self.validate_sql(query)
-        if validation is not True:
-            return str(validation)
+        # Security is handled at the driver-level via the before_cursor_execute event listener.
         
         # 2. Execute
         try:

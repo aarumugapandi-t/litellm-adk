@@ -15,7 +15,7 @@ class MongoDBMemory(BaseMemory):
     ):
         try:
             from motor.motor_asyncio import AsyncIOMotorClient
-            self.client = AsyncIOMotorClient(connection_string)
+            self.client = AsyncIOMotorClient(connection_string)  # type: ignore
             self.db = self.client[database_name]
             self.collection = self.db[collection_name]
         except ImportError:

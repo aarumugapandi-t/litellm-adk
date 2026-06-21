@@ -39,7 +39,7 @@ class DatabaseAgent(LiteLLMAgent):
             if db_url.startswith("mongodb"):
                 self.adapter = MongoAdapter({"url": db_url})
             else:
-                 self.adapter = SQLAdapter({"url": db_url, "schema_config": schema_config})
+                 self.adapter = SQLAdapter({"url": db_url, "schema_config": schema_config})  # type: ignore
         elif db_config:
             # Advanced Config Mode
             db_type = db_config.get("type", "sql").lower()
@@ -48,7 +48,7 @@ class DatabaseAgent(LiteLLMAgent):
             else:
                 if schema_config:
                     db_config["schema_config"] = schema_config
-                self.adapter = SQLAdapter(db_config)
+                self.adapter = SQLAdapter(db_config)  # type: ignore
         else:
             raise ValueError("Must provide either db_url or db_config.")
             
@@ -135,7 +135,7 @@ Schema Context:
 {instructions}
 """
 
-    async def ainvoke(self, content: Union[str, List[dict]], **kwargs):
+    async def ainvoke(self, content: Union[str, List[dict]], **kwargs):  # type: ignore
         """Override ainvoke to inject relevant schema if lazy loading is enabled."""
         if not self.use_lazy_schema:
             return await super().ainvoke(content, **kwargs)

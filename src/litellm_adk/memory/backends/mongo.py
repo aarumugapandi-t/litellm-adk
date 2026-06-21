@@ -21,7 +21,7 @@ class MongoVectorStore(VectorStore):
                  embedding_model: str = "text-embedding-3-small"):
         try:
             from motor.motor_asyncio import AsyncIOMotorClient
-            self.client = AsyncIOMotorClient(connection_string)
+            self.client = AsyncIOMotorClient(connection_string)  # type: ignore
             self.db = self.client[database_name]
             self.collection = self.db[collection_name]
             self.index_name = index_name

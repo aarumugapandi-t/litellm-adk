@@ -25,9 +25,9 @@ account_agent = LiteLLMAgent(
     description="Handles user account queries.",
     system_prompt="You are the Account Management Specialist.",
     tools=[get_user_data],
-    model="openrouter/anthropic/claude-3-haiku",
+    model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v1",
+    base_url="http://localhost:9000/v2",
 )
 
 billing_agent = LiteLLMAgent(
@@ -35,9 +35,9 @@ billing_agent = LiteLLMAgent(
     description="Handles refunds and payment issues.",
     system_prompt="You are the Billing Specialist.",
     tools=[process_refund],
-    model="command-a-03-2025",
+    model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v1"
+    base_url="http://localhost:9000/v2"
 )
 
 primary_agent = LiteLLMAgent(
@@ -46,9 +46,9 @@ primary_agent = LiteLLMAgent(
     system_prompt="You are a helpful customer support triage agent.",
     tools=[],
     sub_agents=[account_agent, billing_agent],
-    model="openrouter/anthropic/claude-3-haiku",
+    model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v1"
+    base_url="http://localhost:9000/v2"
 )
 
 async def main():

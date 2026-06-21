@@ -20,9 +20,9 @@ def calculate_sum(a: int, b: int):
 async def main():
     # 2. Initialize Agent
     agent = LiteLLMAgent(
-        model="oci/xai.grok-3", 
+        model="groq/qwen/qwen3-32b", 
         api_key="sk-1234", 
-        base_url="http://localhost:9000/v1",
+        base_url="http://localhost:9000/v2",
         tools=[get_weather, get_stock_price, calculate_sum]
     )
 

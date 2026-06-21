@@ -20,9 +20,9 @@ async def main():
 
     # 3. Initialize Agent with Policy
     agent = LiteLLMAgent(
-        model="oci/xai.grok-3", 
+        model="groq/qwen/qwen3-32b", 
         api_key="sk-1234", 
-        base_url="http://localhost:9000/v1", 
+        base_url="http://localhost:9000/v2", 
         tools=[send_funds],
         policy_engine=policy,
         memory=FileMemory("history.json")

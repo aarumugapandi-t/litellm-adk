@@ -29,7 +29,7 @@ class DatabaseAdapter(ABC):
         """Return a list of callable tools (functions) to be bound to the Agent."""
         pass
 
-    def set_result_callback(self, callback: callable):
+    def set_result_callback(self, callback: callable):  # type: ignore
         """Sets a callback function(data: Any) to be called when a query executes."""
         self.result_callback = callback
     

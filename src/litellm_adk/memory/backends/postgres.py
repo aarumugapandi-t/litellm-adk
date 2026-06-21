@@ -23,8 +23,8 @@ class PostgresVectorStore(VectorStore):
                  vector_dim: int = 384,
                  embedding_function: Optional[Callable[[List[str]], Awaitable[List[List[float]]]]] = None):
         try:
-            import asyncpg
-            from pgvector.asyncpg import register_vector
+            import asyncpg  # type: ignore
+            from pgvector.asyncpg import register_vector  # type: ignore
         except ImportError:
             raise ImportError("asyncpg/pgvector not installed. Please run `pip install asyncpg pgvector`.")
         
@@ -35,7 +35,7 @@ class PostgresVectorStore(VectorStore):
         # Default to local sentence-transformers if nothing specified
         if not embedding_model and not embedding_function:
             try:
-                from sentence_transformers import SentenceTransformer
+                from sentence_transformers import SentenceTransformer  # type: ignore
                 import asyncio
                 
                 # Lazy load for performance
@@ -51,10 +51,10 @@ class PostgresVectorStore(VectorStore):
                 self.embedding_model = "local-st"
             except ImportError:
                  adk_logger.warning("sentence-transformers not found. Please providing embedding_model or install sentence-transformers.")
-                 self.embedding_function = None
+                 self.embedding_function = None  # type: ignore
                  self.embedding_model = embedding_model or "text-embedding-3-small"
         else:
-            self.embedding_function = embedding_function
+            self.embedding_function = embedding_function  # type: ignore
             self.embedding_model = embedding_model or "text-embedding-3-small"
             
         self.pool = None
@@ -79,7 +79,7 @@ class PostgresVectorStore(VectorStore):
 
     async def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings using custom function or LiteLLM."""
-        if self.embedding_function:
+        if self.embedding_function:  # type: ignore
             return await self.embedding_function(texts)
             
         response = await litellm.aembedding(
@@ -108,7 +108,7 @@ class PostgresVectorStore(VectorStore):
                 embeddings[i]
             ))
             
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn:  # type: ignore
             # Upsert logic
             await conn.executemany(f"""
                 INSERT INTO {self.table_name} (id, text, metadata, embedding)
@@ -127,7 +127,7 @@ class PostgresVectorStore(VectorStore):
         
         query_embedding = (await self._get_embeddings([query]))[0]
         
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn:  # type: ignore
             # Build query with optional filter
             filter_query = ""
             params = [query_embedding, k]

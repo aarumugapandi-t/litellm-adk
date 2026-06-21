@@ -14,9 +14,9 @@ API_KEY = "sk-1234"
 billing_agent = LiteLLMAgent(
     name="billing_agent_specialist",
     description="Handles refunds and payment issues.",
-    model="openrouter/openrouter/free",
+    model="groq/qwen/qwen3-32b",
     api_key=API_KEY,
-    base_url=PROXY_URL,
+    base_url="http://localhost:9000/v2",
     system_prompt="You are the Billing Specialist. If a user asks for a refund, use the process_refund tool."
 )
 
@@ -32,9 +32,9 @@ billing_agent.tools.append(process_refund)
 supervisor = LiteLLMAgent(
     name="triage_agent",
     description="Primary user-facing agent that triages requests.",
-    model="command-a-03-2025",
+    model="groq/qwen/qwen3-32b",
     api_key=API_KEY,
-    base_url=PROXY_URL,
+    base_url="http://localhost:9000/v2",
     sub_agents=[billing_agent],
     system_prompt="You are a helpful customer support triage agent. Use transfer_to_billing_agent_specialist if the user has a billing or refund request."
 )

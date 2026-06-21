@@ -87,7 +87,7 @@ class MongoAdapter(DatabaseAdapter):
                          clean_json = parts[1].split("\n...")[0]
                  
                  data = json.loads(clean_json)
-                 self.result_callback(data)
+                 self.result_callback(data)  # type: ignore
                  return True
              except Exception:
                  pass

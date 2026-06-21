@@ -4,13 +4,15 @@ import json
 import logging
 import asyncio
 import os
-import requests
+import requests  # type: ignore
 import aiohttp
 import base64
 import mimetypes
 from collections import OrderedDict
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Union, Callable, Generator, AsyncGenerator
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from litellm.exceptions import RateLimitError, APIConnectionError, ServiceUnavailableError, Timeout
 
 from .base import BaseAgent
 from .observability.logger import adk_logger
@@ -25,7 +27,7 @@ from .approval import ApprovalManager
 from .models import ApprovalStatus, ApprovalRequest, AgentResponse, UsageInfo
 from .policy import PolicyEngine
 from .handoff import HandoffAgent, HandoffResult
-from .utils.vision import VisionOptimizer
+from .utils.vision import VisionOptimizer, BaseVisionCache, SQLiteVisionCache
 
 # Global LiteLLM configuration for resilience
 litellm.drop_params = True
@@ -131,6 +133,8 @@ class LiteLLMAgent(BaseAgent):
         handoff_context: str = "clean",
         handoff_memory: str = "ephemeral",
         use_global_tools: bool = False,
+        approval_manager: Optional[Any] = None,
+        vision_cache: Optional[BaseVisionCache] = None,
         **kwargs
     ):
         self.name = name
@@ -210,7 +214,11 @@ class LiteLLMAgent(BaseAgent):
         )
         
         self.max_context_tokens = max_context_tokens
-        self.approval_manager = ApprovalManager()
+        
+        # Set up pluggable stores (defaulting to SQLite for process-safety)
+        self.approval_manager = approval_manager or ApprovalManager()
+        self.vision_cache = vision_cache or SQLiteVisionCache()
+        
         self.policy_engine = PolicyEngine()
         
         # Setup Fallbacks
@@ -237,7 +245,7 @@ class LiteLLMAgent(BaseAgent):
             self.extra_kwargs["parallel_tool_calls"] = True
             
         # Memory Persistence
-        self.memory = memory or InMemoryMemory()
+        self.memory: BaseMemory = memory or resolved_memory
         self.max_context_tokens = max_context_tokens
         
         # Process fallbacks: ensure they are standardized
@@ -261,7 +269,7 @@ class LiteLLMAgent(BaseAgent):
         
         # If it's a Session object, we dump the full metadata
         if isinstance(session, Session):
-            self.memory.save_session_metadata(actual_id, session.model_dump())
+            asyncio.run(self.memory.save_session_metadata(actual_id, session.model_dump()))
         # If it's just an ID, there's nothing to dump from the service layer
 
     # --- HITL Convenience Methods ---
@@ -337,7 +345,7 @@ class LiteLLMAgent(BaseAgent):
         Asynchronously processes raw image inputs into optimized data URLs.
         """
         async with aiohttp.ClientSession() as session:
-            tasks = [VisionOptimizer.process_image(img, session) for img in images]
+            tasks = [VisionOptimizer.process_image(img, session, self.vision_cache) for img in images]
             return await asyncio.gather(*tasks)
 
     def _auto_process_images(self, images: List[str]) -> List[str]:
@@ -374,7 +382,7 @@ class LiteLLMAgent(BaseAgent):
                 # Automatically process images for "comfort" (files + URLs + MIME fixing)
                 processed_images = self._auto_process_images(images)
                 for img_data in processed_images:
-                    content.append({"type": "image_url", "image_url": {"url": img_data}})
+                    content.append({"type": "image_url", "image_url": {"url": img_data}})  # type: ignore
                 user_msg = {"role": "user", "content": content}
             else:
                 user_msg = {"role": "user", "content": prompt}
@@ -412,7 +420,7 @@ class LiteLLMAgent(BaseAgent):
         
         if prompt or images:
             if images:
-                content = []
+                content: List[Dict[str, Any]] = []
                 if prompt: content.append({"type": "text", "text": prompt})
                 processed_images = await self._aauto_process_images(images)
                 for img_data in processed_images:
@@ -743,8 +751,8 @@ class LiteLLMAgent(BaseAgent):
         
         func = getattr(tc, "function", None)
         if func:
-            tc_dict["function"]["name"] = getattr(func, "name", None)
-            tc_dict["function"]["arguments"] = getattr(func, "arguments", "")
+            tc_dict["function"]["name"] = getattr(func, "name", None)  # type: ignore
+            tc_dict["function"]["arguments"] = getattr(func, "arguments", "")  # type: ignore
             
         return tc_dict
 
@@ -915,6 +923,12 @@ class LiteLLMAgent(BaseAgent):
         return tool_registry.execute(function_name, **arguments)
 
     @trace_span("agent.completion")
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError, ServiceUnavailableError, Timeout)),
+        reraise=True
+    )
     def _get_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """Execute a completion call with automatic failover support."""
         configs = [{"model": self.model, "api_key": self.api_key, "base_url": self.base_url}] + self.fallbacks
@@ -922,9 +936,9 @@ class LiteLLMAgent(BaseAgent):
         last_err = None
         for config in configs:
             try:
-                model = config.get("model")
-                api_key = config.get("api_key", self.api_key)
-                base_url = config.get("base_url", self.base_url)
+                model = config.get("model")  # type: ignore
+                api_key = config.get("api_key", self.api_key)  # type: ignore
+                base_url = config.get("base_url", self.base_url)  # type: ignore
                 
                 return litellm.completion(
                     model=model,
@@ -949,9 +963,15 @@ class LiteLLMAgent(BaseAgent):
                     last_err = e
                     continue
                 raise e
-        raise last_err
+        raise last_err  # type: ignore
 
     @trace_span("agent.completion_async")
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError, ServiceUnavailableError, Timeout)),
+        reraise=True
+    )
     async def _aget_completion(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
         """Execute an async completion call with automatic failover support."""
         configs = [{"model": self.model, "api_key": self.api_key, "base_url": self.base_url}] + self.fallbacks
@@ -959,9 +979,9 @@ class LiteLLMAgent(BaseAgent):
         last_err = None
         for config in configs:
             try:
-                model = config.get("model")
-                api_key = config.get("api_key", self.api_key)
-                base_url = config.get("base_url", self.base_url)
+                model = config.get("model")  # type: ignore
+                api_key = config.get("api_key", self.api_key)  # type: ignore
+                base_url = config.get("base_url", self.base_url)  # type: ignore
                 
                 return await litellm.acompletion(
                     model=model,
@@ -985,7 +1005,7 @@ class LiteLLMAgent(BaseAgent):
                     last_err = e
                     continue
                 raise e
-        raise last_err
+        raise last_err  # type: ignore
 
     @trace_span("agent.invoke")
     def invoke(self, prompt: str, tools: Optional[List[Dict[str, Any]]] = None, session_id: Optional[Union[str, Session]] = None, images: Optional[List[str]] = None, **kwargs) -> Union['AgentResponse', Dict[str, Any]]:
@@ -1004,9 +1024,9 @@ class LiteLLMAgent(BaseAgent):
                 messages.insert(1, {"role": "system", "content": context_str})
 
         tools = tools or self.tools
-        new_turns = [] # Track only what's new in this specific call
-        accumulated_content = []
-        executed_tool_calls = []
+        new_turns: List[Dict[str, Any]] = [] # Track only what's new in this specific call
+        accumulated_content: List[str] = []
+        executed_tool_calls: List[Any] = []
         total_usage = UsageInfo()
         
         adk_logger.info(f"Invoking completion for model: {self.model}")
@@ -1053,7 +1073,7 @@ class LiteLLMAgent(BaseAgent):
                     # Atomic Pause: if any tool in batch is pending, pause the whole turn
                     if last_msg != self._sanitize_message(message):
                         sanitized_msg = self._sanitize_message(message)
-                        self.memory.add_message(actual_session_id, sanitized_msg)
+                        asyncio.run(self.memory.add_message(actual_session_id, sanitized_msg))
                     
                     return {
                         "status": "requires_approval",
@@ -1132,9 +1152,9 @@ class LiteLLMAgent(BaseAgent):
                 messages.insert(1, {"role": "system", "content": context_str})
 
         tools = tools or self.tools
-        new_turns = []
+        new_turns = []  # type: ignore
         accumulated_content = []
-        executed_tool_calls = []
+        executed_tool_calls = []  # type: ignore
         total_usage = UsageInfo()
         
         adk_logger.info(f"Invoking async completion for model: {self.model}")
@@ -1177,7 +1197,7 @@ class LiteLLMAgent(BaseAgent):
                 if pending_requests:
                     if last_msg != self._sanitize_message(message):
                         sanitized_msg = self._sanitize_message(message)
-                        self.memory.add_message(actual_session_id, sanitized_msg)
+                        await self.memory.add_message(actual_session_id, sanitized_msg)
                     return {
                         "status": "requires_approval",
                         "pending_approvals": [r.model_dump(mode='json') for r in pending_requests],
@@ -1276,7 +1296,7 @@ class LiteLLMAgent(BaseAgent):
 
         tools = tools or self.tools
         
-        new_turns = []
+        new_turns: List[Dict[str, Any]] = []
         
         while True:
             # Check for Resume
@@ -1294,7 +1314,7 @@ class LiteLLMAgent(BaseAgent):
                 
                 # Accumulate tool call parts
                 full_content = ""
-                tool_calls_by_index = {} # map of index -> list of SimpleNamespace
+                tool_calls_by_index: Dict[int, Any] = {} # map of index -> list of SimpleNamespace  # type: ignore
                 notified_tools = set()
 
                 for chunk in response:
@@ -1335,14 +1355,14 @@ class LiteLLMAgent(BaseAgent):
                                 tool_calls_by_index[idx].append(new_tc)
                             else:
                                 if tc_delta.id:
-                                    last_tc.id = tc_delta.id
+                                    last_tc.id = tc_delta.id  # type: ignore
                                 if tc_delta.function:
                                     if tc_delta.function.name:
-                                        last_tc.function.name = (last_tc.function.name or "") + tc_delta.function.name
+                                        last_tc.function.name = (last_tc.function.name or "") + tc_delta.function.name  # type: ignore
                                     if tc_delta.function.arguments:
-                                        if last_tc.function.arguments is None:
-                                            last_tc.function.arguments = ""
-                                        last_tc.function.arguments += tc_delta.function.arguments
+                                        if last_tc.function.arguments is None:  # type: ignore
+                                            last_tc.function.arguments = ""  # type: ignore
+                                        last_tc.function.arguments += tc_delta.function.arguments  # type: ignore
                             
                             # Yield "Thinking" event as soon as name is known
                             current_tc = tool_calls_by_index[idx][-1]
@@ -1434,10 +1454,10 @@ class LiteLLMAgent(BaseAgent):
                                 yield chunk
                     
                     if stream_events:
-                        yield {"type": "tool_end", "name": t_name, "result": str(tool_result_val["content"])}
+                        yield {"type": "tool_end", "name": t_name, "result": str(tool_result_val["content"])}  # type: ignore
                          
                     messages.append(tool_result_val)
-                    new_turns.append(tool_result_val)
+                    new_turns.append(tool_result_val)  # type: ignore
                 
                 continue
             
@@ -1465,7 +1485,7 @@ class LiteLLMAgent(BaseAgent):
                 messages.insert(1, {"role": "system", "content": context_str})
                 
         tools = tools or self.tools
-        new_turns = []
+        new_turns = []  # type: ignore
         
         while True:
             # RESUME LOGIC
@@ -1482,7 +1502,7 @@ class LiteLLMAgent(BaseAgent):
                 response = await self._aget_completion(messages=messages, tools=tools, stream=True, **kwargs)
                 
                 full_content = ""
-                tool_calls_by_index = {}
+                tool_calls_by_index = {}  # type: ignore
                 notified_tools = set()
 
                 async for chunk in response:
@@ -1523,14 +1543,14 @@ class LiteLLMAgent(BaseAgent):
                                 tool_calls_by_index[idx].append(new_tc)
                             else:
                                 if tc_delta.id:
-                                    last_tc.id = tc_delta.id
+                                    last_tc.id = tc_delta.id  # type: ignore
                                 if tc_delta.function:
                                     if tc_delta.function.name:
-                                        last_tc.function.name = (last_tc.function.name or "") + tc_delta.function.name
+                                        last_tc.function.name = (last_tc.function.name or "") + tc_delta.function.name  # type: ignore
                                     if tc_delta.function.arguments:
-                                        if last_tc.function.arguments is None:
-                                            last_tc.function.arguments = ""
-                                        last_tc.function.arguments += tc_delta.function.arguments
+                                        if last_tc.function.arguments is None:  # type: ignore
+                                            last_tc.function.arguments = ""  # type: ignore
+                                        last_tc.function.arguments += tc_delta.function.arguments  # type: ignore
                             
                             # Yield "Thinking" event as soon as name is known
                             current_tc = tool_calls_by_index[idx][-1]
@@ -1676,18 +1696,18 @@ class LiteLLMAgent(BaseAgent):
         # Memory Check
         try:
             await self.memory.get_messages("health_check_session")
-            health["components"]["memory"] = "ok"
+            health["components"]["memory"] = "ok"  # type: ignore
         except Exception as e:
             health["status"] = "unhealthy"
-            health["components"]["memory"] = str(e)
+            health["components"]["memory"] = str(e)  # type: ignore
             
         # Vector Store Check
         if self.vector_store:
             try:
                 await self.vector_store.search("health check", k=1)
-                health["components"]["vector_store"] = "ok"
+                health["components"]["vector_store"] = "ok"  # type: ignore
             except Exception as e:
                 health["status"] = "unhealthy"
-                health["components"]["vector_store"] = str(e)
+                health["components"]["vector_store"] = str(e)  # type: ignore
         
         return health

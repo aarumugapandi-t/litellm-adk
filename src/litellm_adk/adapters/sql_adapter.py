@@ -64,7 +64,7 @@ class SQLAdapter(DatabaseAdapter):
                                  json_part = json_part.split("\n... (Result truncated")[0]
                      
                      data = json.loads(json_part)
-                     self.result_callback(data)
+                     self.result_callback(data)  # type: ignore
                      
                      # Blind Mode: Return summary only
                      count = len(data) if isinstance(data, list) else 1

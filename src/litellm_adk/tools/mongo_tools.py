@@ -17,7 +17,7 @@ class MongoTools:
             db_url: MongoDB connection string.
             db_name: Target database name (required if not in URI).
         """
-        self.client = MongoClient(db_url)
+        self.client = MongoClient(db_url)  # type: ignore
         # Parse db_name if not provided but in URI? 
         # For simplicity, we assume generic URI, but let's try to get default from client.
         try:

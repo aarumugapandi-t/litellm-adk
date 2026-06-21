@@ -10,7 +10,7 @@ from ..observability.logger import adk_logger
 
 Base = declarative_base()
 
-class ConversationModel(Base):
+class ConversationModel(Base):  # type: ignore
     __tablename__ = "adk_conversations"
     
     session_id = Column(String(255), primary_key=True)
@@ -38,7 +38,7 @@ class SQLAlchemyMemory(BaseMemory):
         async with self.async_session() as session:
             result = await session.execute(select(ConversationModel).where(ConversationModel.session_id == session_id))
             conv = result.scalar_one_or_none()
-            return conv.messages if conv else []
+            return conv.messages if conv else []  # type: ignore
 
     async def add_message(self, session_id: str, message: Dict[str, Any]):
         await self._ensure_db()
@@ -49,7 +49,7 @@ class SQLAlchemyMemory(BaseMemory):
                 if conv:
                     # SQLAlchemy mutable JSON tracking can be tricky, so we re-assign
                     updated_messages = list(conv.messages) + [message]
-                    conv.messages = updated_messages
+                    conv.messages = updated_messages  # type: ignore
                 else:
                     conv = ConversationModel(session_id=session_id, messages=[message])
                     session.add(conv)
@@ -62,7 +62,7 @@ class SQLAlchemyMemory(BaseMemory):
                 conv = result.scalar_one_or_none()
                 if conv:
                     updated_messages = list(conv.messages) + messages
-                    conv.messages = updated_messages
+                    conv.messages = updated_messages  # type: ignore
                 else:
                     conv = ConversationModel(session_id=session_id, messages=messages)
                     session.add(conv)
@@ -78,7 +78,7 @@ class SQLAlchemyMemory(BaseMemory):
         async with self.async_session() as session:
             result = await session.execute(select(ConversationModel).where(ConversationModel.session_id == session_id))
             conv = result.scalar_one_or_none()
-            return conv.metadata_json if conv else {}
+            return conv.metadata_json if conv else {}  # type: ignore
 
     async def save_session_metadata(self, session_id: str, metadata: Dict[str, Any]):
         await self._ensure_db()
@@ -87,7 +87,7 @@ class SQLAlchemyMemory(BaseMemory):
                 result = await session.execute(select(ConversationModel).where(ConversationModel.session_id == session_id))
                 conv = result.scalar_one_or_none()
                 if conv:
-                    conv.metadata_json = metadata
+                    conv.metadata_json = metadata  # type: ignore
                 else:
                     conv = ConversationModel(session_id=session_id, metadata_json=metadata)
                     session.add(conv)

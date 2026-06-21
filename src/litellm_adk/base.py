@@ -20,7 +20,12 @@ class BaseAgent(ABC):
     ):
         self.model = model
         self.system_prompt = system_prompt
-        self.memory = memory
+        # Import here to avoid circular imports if necessary, or just type it
+        if memory is None:
+            from .memory.in_memory import InMemoryMemory
+            self.memory: BaseMemory = InMemoryMemory()
+        else:
+            self.memory = memory
         self.vector_store = vector_store
         self.kwargs = kwargs
 

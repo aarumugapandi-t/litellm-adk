@@ -34,7 +34,7 @@ class ContextManager:
     ) -> List[Dict[str, Any]]:
         """
         Truncate history to fit within max_tokens, always preserving the system prompt
-        and the latest message.
+        and ensuring atomic sequences (tool calls and results) are never split.
         """
         if not messages:
             return []
@@ -55,30 +55,56 @@ class ContextManager:
             allowed_tokens -= ContextManager.count_tokens([system_prompt], model)
 
         # 3. Quick Check: Is truncation even needed?
-        # This one call avoids the N calls in the loop below for most turns
         if ContextManager.count_tokens(other_messages, model) <= allowed_tokens:
             return messages
 
-        # 4. Truncate (Keeping the LATEST messages)
-        truncated = []
+        # 4. Group into Atomic Blocks
+        blocks = []
+        current_block = []
+        
+        for msg in other_messages:
+            role = msg.get("role")
+            
+            if role == "tool":
+                # A tool message always belongs to the preceding assistant block
+                current_block.append(msg)
+            elif role == "assistant" and msg.get("tool_calls"):
+                # Start a new block that will include this and subsequent tool messages
+                if current_block:
+                    blocks.append(current_block)
+                current_block = [msg]
+            else:
+                # Regular user or simple assistant message
+                if current_block:
+                    blocks.append(current_block)
+                current_block = [msg]
+                
+        if current_block:
+            blocks.append(current_block)
+
+        # 5. Truncate by block (Keeping the LATEST blocks)
+        truncated_blocks = []
         current_tokens = 0
         
-        if other_messages:
-            last_msg = other_messages[-1]
-            truncated.append(last_msg)
-            current_tokens += ContextManager.count_tokens([last_msg], model)
+        if blocks:
+            # Always keep the very last block, even if it exceeds the budget slightly,
+            # to ensure the LLM has something to respond to.
+            last_block = blocks[-1]
+            truncated_blocks.append(last_block)
+            current_tokens += ContextManager.count_tokens(last_block, model)
             
-            for msg in reversed(other_messages[:-1]):
-                msg_tokens = ContextManager.count_tokens([msg], model)
-                if current_tokens + msg_tokens > allowed_tokens:
+            for block in reversed(blocks[:-1]):
+                block_tokens = ContextManager.count_tokens(block, model)
+                if current_tokens + block_tokens > allowed_tokens:
                     break
-                truncated.insert(0, msg)
-                current_tokens += msg_tokens
+                truncated_blocks.insert(0, block)
+                current_tokens += block_tokens
 
-        # 5. Reconstruct
+        # 6. Reconstruct
         result = []
         if system_prompt:
             result.append(system_prompt)
-        result.extend(truncated)
-        
+        for block in truncated_blocks:
+            result.extend(block)
+            
         return result

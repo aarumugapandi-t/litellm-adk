@@ -20,9 +20,9 @@ def process_refund(user_id: str, amount: float) -> str:
 # Define a sensitive agent that requires approval for refunds
 agent = LiteLLMAgent(
     name="refund_agent",
-    model="openrouter/anthropic/claude-3-haiku",
+    model="groq/qwen/qwen3-32b",
     api_key=API_KEY,
-    base_url=PROXY_URL,
+    base_url="http://localhost:9000/v2",
     tools=[process_refund],
     system_prompt="You are a refund processing agent. For any refund request, use the process_refund tool."
 )

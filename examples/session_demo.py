@@ -8,9 +8,9 @@ async def run_chat():
     memory = FileMemory(db_path)
     
     agent = LiteLLMAgent(
-        model="oci/xai.grok-3",
+        model="groq/qwen/qwen3-32b",
         api_key="sk-1234",
-        base_url="http://localhost:9000/v1",
+        base_url="http://localhost:9000/v2",
         memory=memory,
         system_prompt="You are a helpful assistant who remembers user details."
     )

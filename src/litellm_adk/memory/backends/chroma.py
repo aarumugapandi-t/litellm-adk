@@ -13,7 +13,7 @@ class ChromaVectorStore(VectorStore):
     """
     def __init__(self, collection_name: str = "adk_memory", embedding_model: str = "text-embedding-3-small", persist_path: str = "./chroma_db"):
         try:
-            import chromadb
+            import chromadb  # type: ignore
             # Use persistent client by default
             self.client = chromadb.PersistentClient(path=persist_path)
             self.collection = self.client.get_or_create_collection(name=collection_name)
@@ -46,7 +46,7 @@ class ChromaVectorStore(VectorStore):
         )
         return ids
 
-    async def search(self, query: str, k: int = 4) -> List[Dict[str, Any]]:
+    async def search(self, query: str, k: int = 4) -> List[Dict[str, Any]]:  # type: ignore
         query_embedding = (await self._get_embeddings([query]))[0]
         
         results = self.collection.query(

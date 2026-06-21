@@ -33,9 +33,9 @@ account_agent = LiteLLMAgent(
     description="Handles user account queries, profile lookups, and basic account info.",
     system_prompt="You are the Account Management Specialist. Use your tools to answer user account queries.",
     tools=[get_user_data],
-    model="command-a-03-2025",
+    model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v1"
+    base_url="http://localhost:9000/v2"
 )
 
 billing_agent = LiteLLMAgent(
@@ -43,9 +43,9 @@ billing_agent = LiteLLMAgent(
     description="Handles refunds, charges, and payment related issues.",
     system_prompt="You are the Billing Specialist. Handle refunds and payment inquiries safely.",
     tools=[process_refund],
-    model="command-a-03-2025",
+    model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v1"
+    base_url="http://localhost:9000/v2"
 )
 
 # --- 3. Create Primary "Supervisor" Agent ---
@@ -57,9 +57,9 @@ primary_agent = LiteLLMAgent(
     description="Primary user-facing agent that triages requests.",
     system_prompt="You are a helpful customer support triage agent. You greet the user, determine their need, and transfer them to the appropriate specialist agent if you cannot answer the request directly.",
     sub_agents=[account_agent, billing_agent],
-    model="openrouter/anthropic/claude-3-haiku",
+    model="groq/qwen/qwen3-32b",
     api_key="sk-1234",
-    base_url="http://localhost:9000/v1"
+    base_url="http://localhost:9000/v2"
 )
 
 async def main():

@@ -23,9 +23,9 @@ async def main():
     # 3. INITIALIZE PRODUCTION AGENT
     # Using LiteLLM failover pattern and Vision-capable model
     agent = LiteLLMAgent(
-        base_url="http://localhost:9000/v1",
+        base_url="http://localhost:9000/v2",
         api_key="sk-1234",
-        model="gemini/gemini-2.5-flash",
+        model="groq/qwen/qwen3-32b",
         memory=memory,
         tools=[get_weather_data],
         parallel_tool_calls=False
