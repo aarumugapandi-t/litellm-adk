@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "litellm-adk"
-version = "0.3.1"
+version = "1.0.0"
 description = "A portable and resilient Multi-Agent Development Kit for LLM orchestration and safety."
 readme = "README.md"
 requires-python = ">=3.9"
