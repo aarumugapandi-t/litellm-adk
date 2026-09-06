@@ -7,9 +7,9 @@ async def main():
     # Note: The agent now automatically handles URL fetching and MIME type correction!
     agent = LiteLLMAgent(
         name="VisionAssistant",
+        model="openrouter/mistralai/ministral-3b-2512",
         api_key="sk-1234",
         base_url="http://localhost:9000/v1",
-        model="groq/qwen/qwen3-32b",
         system_prompt="You are a vision expert. Describe the images provided in detail."
     )
 
@@ -18,22 +18,22 @@ async def main():
     # the agent will auto-correct it using magic bytes.
     image_url = "https://4kwallpapers.com/images/wallpapers/tanjiro-kamado-2560x1440-10054.jpg"
 
-    # print(f"Vision Demo: {image_url}")
+    print(f"Vision Demo: {image_url}")
 
-    # print("\n--- [Sync Invoke] ---")
-    # # No extra methods needed - just pass the URL!
-    # response = agent.invoke(
-    #     prompt="What anime character is in this image?",
-    #     images=[image_url]
-    # )
-    # print(f"Response: {response.content}\n")
+    print("\n--- [Sync Invoke] ---")
+    # No extra methods needed - just pass the URL!
+    response = agent.invoke(
+        prompt="What anime character is in this image?",
+        images=[image_url]
+    )
+    print(f"Response: {response.content}\n")
 
-    # print("--- [Async Invoke] ---")
-    # a_response = await agent.ainvoke(
-    #     prompt="Describe the style and colors of this artwork.",
-    #     images=[image_url]
-    # )
-    # print(f"Response: {a_response.content}\n")
+    print("--- [Async Invoke] ---")
+    a_response = await agent.ainvoke(
+        prompt="Describe the style and colors of this artwork.",
+        images=[image_url]
+    )
+    print(f"Response: {a_response.content}\n")
 
     print("--- [Async Stream] ---")
     print("Streaming: ", end="", flush=True)

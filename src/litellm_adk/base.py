@@ -30,9 +30,47 @@ class BaseAgent(ABC):
         self.kwargs = kwargs
 
     @abstractmethod
-    def invoke(self, prompt: str, **kwargs) -> Any:
+    def invoke(
+        self,
+        prompt: Union[str, List[Dict[str, Any]]],
+        session: Optional[Union[str, Any]] = None,
+        session_id: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Any:
         pass
 
     @abstractmethod
-    async def ainvoke(self, prompt: str, **kwargs) -> Any:
+    async def ainvoke(
+        self,
+        prompt: Union[str, List[Dict[str, Any]]],
+        session: Optional[Union[str, Any]] = None,
+        session_id: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        pass
+
+    @abstractmethod
+    def stream(
+        self,
+        prompt: Union[str, List[Dict[str, Any]]],
+        session: Optional[Union[str, Any]] = None,
+        session_id: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        stream_events: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        pass
+
+    @abstractmethod
+    def astream(
+        self,
+        prompt: Union[str, List[Dict[str, Any]]],
+        session: Optional[Union[str, Any]] = None,
+        session_id: Optional[str] = None,
+        images: Optional[List[str]] = None,
+        stream_events: bool = False,
+        **kwargs: Any,
+    ) -> Any:
         pass

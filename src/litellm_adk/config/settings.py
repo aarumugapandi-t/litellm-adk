@@ -34,5 +34,6 @@ class Settings(BaseSettings):
     tool_timeout: float = Field(default=30.0, description="Maximum execution time (seconds) for a single tool call.")
     tool_error_policy: str = Field(default="raise", description="Policy for tool failures: 'raise' or 'return_to_llm'.")
     max_tokens: int = Field(default=4096, description="Default max tokens for LLM responses.")
+    max_context_tokens: Optional[int] = Field(default=None, description="Default max context tokens limit.")
 
 settings = Settings()

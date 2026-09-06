@@ -135,42 +135,59 @@ Schema Context:
 {instructions}
 """
 
-    async def ainvoke(self, content: Union[str, List[dict]], **kwargs):  # type: ignore
-        """Override ainvoke to inject relevant schema if lazy loading is enabled."""
+    def _prepare_lazy_content(self, content: Union[str, List[dict]]) -> Union[str, List[dict]]:
+        """Prepares lazy targeted schema if enabled, returning the formatted prompt or message list."""
         if not self.use_lazy_schema:
-            return await super().ainvoke(content, **kwargs)
-            
-        # Lazy Loading Strategy
+            return content
+
         user_query = content if isinstance(content, str) else str(content)
-        
+
         relevant_tables = []
         low_query = user_query.lower()
-        
+
         for t in self.all_tables:
             if t.lower() in low_query:
                 relevant_tables.append(t)
             for k in self.data_dictionary.keys():
                 if k.startswith(f"{t}.") and (k.lower() in low_query or self.data_dictionary[k].lower() in low_query):
-                     if t not in relevant_tables:
-                         relevant_tables.append(t)
+                    if t not in relevant_tables:
+                        relevant_tables.append(t)
 
         if not relevant_tables:
-             relevant_tables = self.all_tables[:5]
-             
+            relevant_tables = self.all_tables[:5]
+
         # Use Adapter to fetch targeted schema
         targeted_schema = self.adapter.get_schema_summary(relevant_tables)
-        
+
         schema_msg = {
-            "role": "system", 
+            "role": "system",
             "content": f"**Relevant Schema Context for this Query:**\n{targeted_schema}"
         }
-        
+
         if isinstance(content, str):
-            messages = [schema_msg, {"role": "user", "content": content}]
+            return [schema_msg, {"role": "user", "content": content}]
         else:
-            messages = [schema_msg] + content
-            
-        return await super().ainvoke(messages, **kwargs)
+            return [schema_msg] + content
+
+    def invoke(self, content: Union[str, List[dict]], **kwargs: Any) -> Any:
+        """Synchronously invokes the database agent with optional lazy schema injection."""
+        prepared = self._prepare_lazy_content(content)
+        return super().invoke(prepared, **kwargs)
+
+    async def ainvoke(self, content: Union[str, List[dict]], **kwargs: Any) -> Any:
+        """Asynchronously invokes the database agent with optional lazy schema injection."""
+        prepared = self._prepare_lazy_content(content)
+        return await super().ainvoke(prepared, **kwargs)
+
+    def stream(self, content: Union[str, List[dict]], **kwargs: Any) -> Any:
+        """Streams database agent execution with optional lazy schema injection."""
+        prepared = self._prepare_lazy_content(content)
+        return super().stream(prepared, **kwargs)
+
+    def astream(self, content: Union[str, List[dict]], **kwargs: Any) -> Any:
+        """Asynchronously streams database agent execution with optional lazy schema injection."""
+        prepared = self._prepare_lazy_content(content)
+        return super().astream(prepared, **kwargs)
 
     def refresh_schema(self):
         """Force refresh of database schema."""

@@ -33,8 +33,13 @@ dependencies = [
     "motor>=3.3.0",
     "tenacity>=8.0.0",
     "PyYAML>=6.0",
-    "redis>=5.0.0"
+    "redis>=5.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0"
 ]
+
+[project.scripts]
+litellm-adk = "litellm_adk.cli.main:cli"
 
 [project.urls]
 Homepage = "https://github.com/aarumugapandi400267/litellm-adk"

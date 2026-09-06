@@ -31,7 +31,7 @@ def test_cache_manager_redis(mock_cache):
 @patch("litellm.Cache")
 def test_cache_manager_dragonfly_semantic(mock_cache):
     CacheManager.enable_redis_cache(host="10.0.0.1", port=6380, semantic=True)
-    mock_cache.assert_called_with(type="redis-semantic", host="10.0.0.1", port=6380, password=None, ttl=3600)
+    mock_cache.assert_called_with(type="redis-semantic", host="10.0.0.1", port=6380, password=None, ttl=3600, similarity_threshold=0.8)
     
 def test_cache_manager_disable():
     litellm.cache = MagicMock()
