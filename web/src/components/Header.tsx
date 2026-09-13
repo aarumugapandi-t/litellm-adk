@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   Play,
+  Square,
   Save,
   FolderOpen,
   History,
@@ -17,6 +18,7 @@ interface HeaderProps {
   onUpdateWorkflow: (updated: Partial<WorkflowDefinition>) => void;
   onSave: () => Promise<void>;
   onTestRun: () => void;
+  onStop?: () => void;
   onOpenWorkflowsList: () => void;
   onOpenHistory: () => void;
   onExport: () => void;
@@ -30,6 +32,7 @@ export const Header: React.FC<HeaderProps> = ({
   onUpdateWorkflow,
   onSave,
   onTestRun,
+  onStop,
   onOpenWorkflowsList,
   onOpenHistory,
   onExport,
@@ -146,14 +149,24 @@ export const Header: React.FC<HeaderProps> = ({
           <span>{isSaving ? "Saving..." : "Save"}</span>
         </button>
 
-        <button
-          onClick={onTestRun}
-          disabled={isRunning}
-          className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-xs font-semibold shadow-lg shadow-sky-500/25 transition disabled:opacity-50"
-        >
-          <Play className="w-3.5 h-3.5 fill-white" />
-          <span>{isRunning ? "Running..." : "Test Run"}</span>
-        </button>
+        {isRunning ? (
+          <button
+            onClick={onStop}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold shadow-lg shadow-rose-600/30 transition animate-pulse"
+            title="Stop running workflow"
+          >
+            <Square className="w-3.5 h-3.5 fill-white" />
+            <span>Stop</span>
+          </button>
+        ) : (
+          <button
+            onClick={onTestRun}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-xs font-semibold shadow-lg shadow-sky-500/25 transition"
+          >
+            <Play className="w-3.5 h-3.5 fill-white" />
+            <span>Test Run</span>
+          </button>
+        )}
       </div>
     </header>
   );

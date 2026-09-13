@@ -2,14 +2,17 @@
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
 from ...workflow.schema import WorkflowDefinition, WorkflowStatus
 from ...workflow.engine import WorkflowEngine
+from ...workflow.state import ExecutionState, ExecutionStatus
 from ...persistence.sqlite_workflow import workflow_repository, execution_repository
 from .stream import stream_manager
+from ..execution_manager import active_execution_manager
 
 router = APIRouter(tags=["Workflows"])
 
@@ -30,19 +33,38 @@ class ExecuteWorkflowResponse(BaseModel):
 async def _run_workflow_background(
     workflow: WorkflowDefinition,
     trigger_data: Dict[str, Any],
-    exec_id: str
+    exec_id: str,
+    initial_state: ExecutionState,
 ):
-    """Background task running the workflow engine and persisting final state."""
+    """Background task running the workflow engine, broadcasting events, and persisting final state."""
     engine = WorkflowEngine()
+    current_task = asyncio.current_task()
+    active_execution_manager.register(exec_id, engine, initial_state, current_task)
 
     async def _on_event(e_type: str, data: Dict[str, Any]):
         await stream_manager.broadcast(exec_id, data)
 
     engine.subscribe(_on_event)
 
-    state = await engine.execute(workflow, trigger_data=trigger_data)
-    state.execution_id = exec_id
-    await execution_repository.save(state)
+    try:
+        final_state = await engine.execute(
+            workflow,
+            trigger_data=trigger_data,
+            existing_state=initial_state
+        )
+        final_state.execution_id = exec_id
+        await execution_repository.save(final_state)
+    except asyncio.CancelledError:
+        initial_state.status = ExecutionStatus.CANCELLED
+        initial_state.finished_at = datetime.now(timezone.utc).isoformat()
+        await execution_repository.save(initial_state)
+    except Exception as ex:
+        initial_state.status = ExecutionStatus.FAILED
+        initial_state.errors.append(str(ex))
+        initial_state.finished_at = datetime.now(timezone.utc).isoformat()
+        await execution_repository.save(initial_state)
+    finally:
+        active_execution_manager.unregister(exec_id)
 
 
 @router.get("/workflows")
@@ -142,8 +164,20 @@ async def execute_workflow(
 
     exec_id = f"exec_{uuid.uuid4().hex[:12]}"
 
+    # Immediately initialize and persist the running execution record
+    initial_state = ExecutionState(
+        execution_id=exec_id,
+        workflow_id=wf.id,
+        workflow_version=wf.version,
+        status=ExecutionStatus.RUNNING,
+        trigger_data=req.trigger_data,
+        variables={**wf.variables, **req.variables},
+        started_at=datetime.now(timezone.utc).isoformat(),
+    )
+    await execution_repository.save(initial_state)
+
     if req.run_async:
-        background_tasks.add_task(_run_workflow_background, wf, req.trigger_data, exec_id)
+        background_tasks.add_task(_run_workflow_background, wf, req.trigger_data, exec_id, initial_state)
         return ExecuteWorkflowResponse(
             execution_id=exec_id,
             workflow_id=wf.id,
@@ -152,20 +186,24 @@ async def execute_workflow(
     else:
         # Run synchronously
         engine = WorkflowEngine()
+        active_execution_manager.register(exec_id, engine, initial_state)
 
         async def _on_event(e_type: str, data: Dict[str, Any]):
             await stream_manager.broadcast(exec_id, data)
 
         engine.subscribe(_on_event)
-        state = await engine.execute(wf, trigger_data=req.trigger_data)
-        state.execution_id = exec_id
-        await execution_repository.save(state)
-        return ExecuteWorkflowResponse(
-            execution_id=exec_id,
-            workflow_id=wf.id,
-            status=state.status.value,
-            outputs=state.node_outputs,
-        )
+        try:
+            state = await engine.execute(wf, trigger_data=req.trigger_data, existing_state=initial_state)
+            state.execution_id = exec_id
+            await execution_repository.save(state)
+            return ExecuteWorkflowResponse(
+                execution_id=exec_id,
+                workflow_id=wf.id,
+                status=state.status.value,
+                outputs=state.node_outputs,
+            )
+        finally:
+            active_execution_manager.unregister(exec_id)
 
 
 @router.get("/workflows/{workflow_id}/export")

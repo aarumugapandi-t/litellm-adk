@@ -3,6 +3,7 @@ import {
   ChevronUp,
   ChevronDown,
   Play,
+  Square,
   CheckCircle2,
   AlertCircle,
   Clock,
@@ -20,6 +21,7 @@ interface ExecutionDrawerProps {
   isOpen: boolean;
   onToggle: () => void;
   onApprove: (approved: boolean, userInput?: string, selectedOption?: string) => Promise<void>;
+  onStop?: () => void;
   isSubmittingApproval: boolean;
 }
 
@@ -28,6 +30,7 @@ export const ExecutionDrawer: React.FC<ExecutionDrawerProps> = ({
   isOpen,
   onToggle,
   onApprove,
+  onStop,
   isSubmittingApproval,
 }) => {
   const [approvalComment, setApprovalComment] = useState("");
@@ -65,6 +68,8 @@ export const ExecutionDrawer: React.FC<ExecutionDrawerProps> = ({
                 ? "bg-blue-500/10 text-blue-400 border-blue-500/30 animate-pulse"
                 : executionState.status === "waiting_for_human"
                 ? "bg-amber-500/20 text-amber-400 border-amber-500/50"
+                : executionState.status === "cancelled"
+                ? "bg-orange-500/20 text-orange-400 border-orange-500/40"
                 : "bg-rose-500/10 text-rose-400 border-rose-500/30"
             }`}
           >
@@ -72,11 +77,26 @@ export const ExecutionDrawer: React.FC<ExecutionDrawerProps> = ({
           </span>
         </div>
 
-        <div className="flex items-center gap-4 text-xs text-slate-400">
+        <div className="flex items-center gap-3 text-xs text-slate-400">
           <div className="flex items-center gap-1 font-mono text-[11px]">
             <Clock className="w-3.5 h-3.5 text-slate-500" />
             <span>{executionState.total_duration ? executionState.total_duration.toFixed(2) : "0.00"}s</span>
           </div>
+
+          {executionState.status === "running" && onStop && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onStop();
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-semibold transition shadow-md shadow-rose-600/30 animate-pulse"
+              title="Stop workflow execution"
+            >
+              <Square className="w-3 h-3 fill-white" />
+              <span>Stop</span>
+            </button>
+          )}
 
           <button className="text-slate-400 hover:text-slate-200">
             {isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
@@ -102,6 +122,7 @@ export const ExecutionDrawer: React.FC<ExecutionDrawerProps> = ({
                     {rec.status === "completed" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
                     {rec.status === "running" && <Play className="w-3.5 h-3.5 text-blue-400 animate-pulse" />}
                     {rec.status === "waiting_for_human" && <UserCheck className="w-3.5 h-3.5 text-amber-400" />}
+                    {rec.status === "cancelled" && <Square className="w-3.5 h-3.5 text-orange-400" />}
                     {rec.status === "failed" && <AlertCircle className="w-3.5 h-3.5 text-rose-400" />}
                     <span className="font-medium text-slate-200">{rec.node_id}</span>
                     <span className="text-[10px] text-slate-500 font-mono">({rec.node_type})</span>
@@ -118,6 +139,22 @@ export const ExecutionDrawer: React.FC<ExecutionDrawerProps> = ({
 
           {/* Right: Human Approval Dialog or Output Summary */}
           <div className="w-96 p-3 overflow-y-auto bg-[#111827]">
+            {executionState.status === "running" && onStop && (
+              <div className="mb-3 p-3 rounded-xl bg-rose-950/20 border border-rose-500/30 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-semibold text-rose-300">Execution Running</div>
+                  <div className="text-[10px] text-slate-400">Nodes are currently executing</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={onStop}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs shadow-md shadow-rose-600/30 transition cursor-pointer"
+                >
+                  <Square className="w-3.5 h-3.5 fill-white" />
+                  <span>Stop Workflow</span>
+                </button>
+              </div>
+            )}
             {isPaused && approval ? (
               <div className="space-y-3 bg-amber-950/20 border border-amber-500/40 rounded-xl p-3.5">
                 <div className="flex items-center gap-2 text-amber-400 font-semibold text-xs">

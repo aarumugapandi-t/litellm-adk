@@ -19,7 +19,7 @@ class AgentNode:
             description="Executes a multi-turn AI Agent with tool reasoning, memory, and safety guardrails.",
             category="AI & Agents",
             icon="bot",
-            inputs=["input"],
+            inputs=["input", "tools"],
             outputs=["output"],
             config_schema={
                 "type": "object",
@@ -74,7 +74,7 @@ class AgentNode:
 
     async def execute(self, context: NodeContext) -> NodeResult:
         cfg = context.node_config
-        model_name = cfg.get("model", "openrouter/mistralai/ministral-3b-2512")
+        model_name = cfg.get("model") or context.variables.get("default_model") or context.variables.get("model") or "openrouter/mistralai/ministral-3b-2512"
         raw_api_key = cfg.get("api_key", "")
         raw_base_url = cfg.get("base_url", "")
         raw_prompt = cfg.get("prompt", "")
@@ -96,10 +96,10 @@ class AgentNode:
         base_url_rendered = str(evaluate_template(raw_base_url, eval_ctx)) if raw_base_url else None
 
         # Fallback to variables if not explicitly provided
-        if not api_key_rendered and "api_key" in context.variables:
-            api_key_rendered = context.variables["api_key"]
-        if not base_url_rendered and "base_url" in context.variables:
-            base_url_rendered = context.variables["base_url"]
+        if not api_key_rendered:
+            api_key_rendered = context.variables.get("api_key") or context.variables.get("default_api_key")
+        if not base_url_rendered:
+            base_url_rendered = context.variables.get("base_url") or context.variables.get("default_base_url")
 
         # Support comma-separated strings or lists for tool_names
         if isinstance(tool_names, str):
@@ -113,6 +113,14 @@ class AgentNode:
                 resolved_tools.append(tool_obj)
             else:
                 resolved_tools.append(t_name)
+
+        # Attach visually connected tools from incoming edges ('tools' handle)
+        attached_tools = context.inputs.get("tools", [])
+        if not isinstance(attached_tools, list):
+            attached_tools = [attached_tools]
+        for at in attached_tools:
+            if at and at not in resolved_tools:
+                resolved_tools.append(at)
 
         try:
             from ...agent.agent import ExecutionConfig

@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Set
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
+from ...workflow.state import safe_serialize
+
 router = APIRouter(tags=["Streaming"])
 
 
@@ -23,7 +25,7 @@ class ConnectionManager:
         # Replay any existing events for this execution
         for event in self.event_history.get(execution_id, []):
             try:
-                await websocket.send_text(json.dumps(event))
+                await websocket.send_text(json.dumps(safe_serialize(event)))
             except Exception:
                 pass
 
@@ -34,9 +36,10 @@ class ConnectionManager:
                 del self.active_connections[execution_id]
 
     async def broadcast(self, execution_id: str, event: Dict[str, Any]):
-        self.event_history[execution_id].append(event)
+        clean_event = safe_serialize(event)
+        self.event_history[execution_id].append(clean_event)
         if execution_id in self.active_connections:
-            msg = json.dumps(event)
+            msg = json.dumps(clean_event)
             dead_conns = []
             for connection in list(self.active_connections[execution_id]):
                 try:
@@ -73,13 +76,13 @@ async def sse_execution_events(execution_id: str):
 
         # Send existing history first
         for ev in stream_manager.event_history.get(execution_id, []):
-            yield f"data: {json.dumps(ev)}\n\n"
+            yield f"data: {json.dumps(safe_serialize(ev))}\n\n"
 
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=20.0)
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get("type") in ("workflow.completed", "workflow.failed"):
+                yield f"data: {json.dumps(safe_serialize(event))}\n\n"
+                if event.get("type") in ("workflow.completed", "workflow.failed", "workflow.cancelled"):
                     break
             except asyncio.TimeoutError:
                 yield ": keepalive\n\n"

@@ -11,15 +11,21 @@ import { api } from "./api/client";
 import { streamClient } from "./api/websocket";
 import { WorkflowDefinition, NodeDefinition, ExecutionState, WorkflowNode } from "./types/workflow";
 
-// Canonical starter workflow conforming to MVP specs
+// Canonical starter workflow with visual tool attachment and variable autocompletion
 const DEFAULT_WORKFLOW: WorkflowDefinition = {
   id: "canonical_ai_pipeline",
   name: "AI Research & Approval Pipeline",
-  description: "Searches vector memory, synthesizes findings via AI Agent, and gates publication with Human Approval.",
+  description: "Searches vector memory, equips Agent with live Web Search tool, and gates publication with Human Approval.",
   version: "1.0",
   active: false,
   status: "draft",
-  variables: { env: "production", confidence_threshold: 0.8 },
+  variables: {
+    env: "production",
+    confidence_threshold: 0.8,
+    api_key: "sk-litellm-master-key",
+    base_url: "http://localhost:9000/v1",
+    default_model: "openrouter/mistralai/ministral-3b-2512",
+  },
   settings: { timeout: 300, max_concurrency: 5 },
   nodes: [
     {
@@ -41,13 +47,23 @@ const DEFAULT_WORKFLOW: WorkflowDefinition = {
       outputs: ["output"],
     },
     {
+      id: "web_search_1",
+      type: "web_search_tool",
+      name: "Live Web Search",
+      position: { x: 630, y: 380 },
+      config: { max_results: 3, default_query: "Autonomous agentic workflows 2026" },
+      inputs: [],
+      outputs: ["tool"],
+    },
+    {
       id: "agent_1",
       type: "agent",
       name: "Research Agent",
-      position: { x: 630, y: 150 },
+      position: { x: 630, y: 180 },
       config: {
-        model: "openai/gpt-4o-mini",
-        prompt: "Synthesize these findings for executive review: {{ vector_1.output }}",
+        model: "openrouter/mistralai/ministral-3b-2512",
+        use_workflow_credentials: true,
+        prompt: "Synthesize these findings using your attached web search tool: {{ vector_1.output }}",
         system_prompt: "You are a senior technical analyst. Summarize findings clearly.",
       },
       inputs: ["input"],
@@ -57,7 +73,7 @@ const DEFAULT_WORKFLOW: WorkflowDefinition = {
       id: "human_1",
       type: "human",
       name: "Executive Approval",
-      position: { x: 920, y: 150 },
+      position: { x: 950, y: 180 },
       config: { message: "Please review and approve publication of the agent report." },
       inputs: ["input"],
       outputs: ["approved", "rejected"],
@@ -66,7 +82,7 @@ const DEFAULT_WORKFLOW: WorkflowDefinition = {
       id: "output_1",
       type: "output",
       name: "Publication Output",
-      position: { x: 1210, y: 150 },
+      position: { x: 1260, y: 180 },
       config: { response: "{{ agent_1.output }}" },
       inputs: ["input"],
       outputs: [],
@@ -75,6 +91,7 @@ const DEFAULT_WORKFLOW: WorkflowDefinition = {
   edges: [
     { id: "e1", source: "trigger_1", target: "vector_1" },
     { id: "e2", source: "vector_1", target: "agent_1" },
+    { id: "e_tool", source: "web_search_1", target: "agent_1", sourceHandle: "tool", targetHandle: "tools" },
     { id: "e3", source: "agent_1", target: "human_1" },
     { id: "e4", source: "human_1", target: "output_1", sourceHandle: "approved" },
   ],
@@ -90,6 +107,7 @@ export default function App() {
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(null);
   const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
 
   // React Flow state
@@ -139,15 +157,25 @@ export default function App() {
       },
     }));
 
-    const mappedEdges: Edge[] = wf.edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      sourceHandle: e.sourceHandle || undefined,
-      targetHandle: e.targetHandle || undefined,
-      animated: true,
-      style: { stroke: "#38bdf8", strokeWidth: 2 },
-    }));
+    const mappedEdges: Edge[] = wf.edges.map((e) => {
+      const isToolEdge = e.targetHandle === "tools" || e.sourceHandle === "tool";
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourceHandle || undefined,
+        targetHandle: e.targetHandle || undefined,
+        animated: true,
+        label: isToolEdge ? "🧩 Tool" : undefined,
+        labelStyle: isToolEdge ? { fill: "#34d399", fontWeight: 600, fontSize: 10 } : undefined,
+        labelBgStyle: isToolEdge ? { fill: "#064e3b", fillOpacity: 0.9, rx: 4, ry: 4 } : undefined,
+        labelBgPadding: isToolEdge ? [6, 2] : undefined,
+        style: {
+          stroke: isToolEdge ? "#34d399" : "#38bdf8",
+          strokeWidth: isToolEdge ? 2.5 : 2,
+        },
+      };
+    });
 
     setNodes(mappedNodes);
     setEdges(mappedEdges);
@@ -156,7 +184,7 @@ export default function App() {
   const getCategoryForType = (type: string) => {
     if (type.includes("trigger")) return "Triggers";
     if (type === "agent" || type === "llm") return "AI & Agents";
-    if (type === "tool") return "Tools";
+    if (type.includes("tool")) return "Tools";
     if (type === "memory" || type === "vector_search") return "Memory & Vector";
     if (type === "condition" || type === "transform") return "Logic & Control";
     if (type === "human") return "Human in the Loop";
@@ -225,6 +253,7 @@ export default function App() {
         current.nodes.find((n) => n.type.includes("trigger"))?.config?.default_payload || {};
 
       const res = await api.executeWorkflow(current.id, triggerPayload, true);
+      setCurrentExecutionId(res.execution_id);
 
       // Connect WebSocket stream
       streamClient.disconnect();
@@ -262,13 +291,34 @@ export default function App() {
         // Fetch execution state snapshot
         api.getExecution(res.execution_id).then(setExecutionState).catch(console.warn);
 
-        if (event.type === "workflow.completed" || event.type === "workflow.failed") {
+        if (event.type === "workflow.completed" || event.type === "workflow.failed" || event.type === "workflow.cancelled") {
           setIsRunning(false);
         }
       });
     } catch (err: any) {
       alert(`Execution failed: ${err.message}`);
       setIsRunning(false);
+    }
+  };
+
+  const handleStop = async () => {
+    const execId = currentExecutionId || executionState?.execution_id;
+    if (execId) {
+      try {
+        await api.cancelExecution(execId);
+      } catch (err) {
+        console.warn("Error cancelling execution:", err);
+      }
+    }
+    setIsRunning(false);
+    streamClient.disconnect();
+    setNodes((nds) =>
+      nds.map((n) =>
+        n.data.status === "running" ? { ...n, data: { ...n.data, status: "failed" } } : n
+      )
+    );
+    if (executionState) {
+      setExecutionState((prev) => (prev ? { ...prev, status: "cancelled" } : null));
     }
   };
 
@@ -320,6 +370,86 @@ export default function App() {
     setSelectedNode(null);
   };
 
+  const handleAttachToolToAgent = useCallback((toolType: string, agentNodeId: string) => {
+    const targetAgent = nodes.find((n) => n.id === agentNodeId);
+    if (!targetAgent) return;
+
+    const def = availableNodes.find((n) => n.type === toolType);
+    const toolName = def?.name || (toolType === "web_search_tool" ? "Web Search" : toolType === "calculator_tool" ? "Calculator" : "HTTP Request");
+    const category = def?.category || "Tools";
+    const description = def?.description || "";
+
+    const existingToolEdges = edges.filter(
+      (e) => e.target === agentNodeId && (e.targetHandle === "tools" || !e.targetHandle)
+    );
+    const xPos = targetAgent.position.x + (existingToolEdges.length * 300) - 20;
+    const yPos = targetAgent.position.y + 240;
+
+    const newToolId = `${toolType}_${Date.now().toString().slice(-5)}`;
+    const newToolNode: Node = {
+      id: newToolId,
+      type: "custom",
+      position: { x: xPos, y: yPos },
+      data: {
+        id: newToolId,
+        type: toolType,
+        name: toolName,
+        category: category,
+        description: description,
+        inputs: [],
+        outputs: ["tool"],
+        config: {},
+        status: "idle",
+      },
+    };
+
+    const newEdge: Edge = {
+      id: `e_${newToolId}_to_${agentNodeId}_${Date.now().toString().slice(-4)}`,
+      source: newToolId,
+      target: agentNodeId,
+      sourceHandle: "tool",
+      targetHandle: "tools",
+      animated: true,
+      label: "🧩 Tool",
+      labelStyle: { fill: "#34d399", fontWeight: 600, fontSize: 10 },
+      labelBgStyle: { fill: "#064e3b", fillOpacity: 0.9, rx: 4, ry: 4 },
+      labelBgPadding: [6, 2],
+      style: {
+        stroke: "#34d399",
+        strokeWidth: 2.5,
+      },
+    };
+
+    setNodes((nds) => [...nds, newToolNode]);
+    setEdges((eds) => [...eds, newEdge]);
+  }, [nodes, edges, availableNodes]);
+
+  useEffect(() => {
+    const handleAttach = (e: any) => {
+      const { toolType, agentNodeId } = e.detail || {};
+      if (toolType && agentNodeId) {
+        handleAttachToolToAgent(toolType, agentNodeId);
+      }
+    };
+    const handleSelect = (e: any) => {
+      const { agentNodeId } = e.detail || {};
+      const target = nodes.find((n) => n.id === agentNodeId);
+      if (target) setSelectedNode(target);
+    };
+    window.addEventListener("attach-tool-to-agent" as any, handleAttach);
+    window.addEventListener("select-agent-node" as any, handleSelect);
+    return () => {
+      window.removeEventListener("attach-tool-to-agent" as any, handleAttach);
+      window.removeEventListener("select-agent-node" as any, handleSelect);
+    };
+  }, [handleAttachToolToAgent, nodes]);
+
+  const handleDetachToolFromAgent = (toolNodeId: string, agentNodeId: string) => {
+    setEdges((eds) =>
+      eds.filter((e) => !(e.source === toolNodeId && e.target === agentNodeId))
+    );
+  };
+
   const handleExport = () => {
     const current = getWorkflowFromCanvas();
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(current, null, 2));
@@ -357,6 +487,7 @@ export default function App() {
         onUpdateWorkflow={(updated) => setWorkflow((prev) => ({ ...prev, ...updated }))}
         onSave={handleSave}
         onTestRun={handleTestRun}
+        onStop={handleStop}
         onOpenWorkflowsList={() => setIsWorkflowsModalOpen(true)}
         onOpenHistory={() => setIsHistoryModalOpen(true)}
         onExport={handleExport}
@@ -386,11 +517,16 @@ export default function App() {
           availableNodes={availableNodes}
           onUpdateNodeData={handleUpdateNodeData}
           onDeleteNode={handleDeleteNode}
+          onAttachToolToAgent={handleAttachToolToAgent}
+          onDetachToolFromAgent={handleDetachToolFromAgent}
           executionRecord={
             selectedNode && executionState?.node_records
               ? executionState.node_records[selectedNode.id]
               : null
           }
+          allNodes={nodes}
+          allEdges={edges}
+          workflowVariables={workflow.variables || {}}
         />
       </div>
 
@@ -399,6 +535,7 @@ export default function App() {
         isOpen={isDrawerOpen}
         onToggle={() => setIsDrawerOpen((prev) => !prev)}
         onApprove={handleApprove}
+        onStop={handleStop}
         isSubmittingApproval={isSubmittingApproval}
       />
 

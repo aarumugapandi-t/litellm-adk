@@ -121,5 +121,31 @@ class Tool:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self.func(*args, **kwargs)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Returns a JSON-serializable dictionary representation of the Tool."""
+        return {
+            "type": "tool",
+            "name": self.name,
+            "description": self.description,
+            "permissions": [p.value for p in self.permissions],
+        }
+
+    def __json__(self) -> Dict[str, Any]:
+        return self.to_dict()
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type: Any, handler: Any) -> Any:
+        try:
+            from pydantic_core import core_schema
+            return core_schema.json_or_python_schema(
+                json_schema=core_schema.dict_schema(),
+                python_schema=core_schema.is_instance_schema(cls),
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    lambda instance: instance.to_dict() if hasattr(instance, "to_dict") else {"type": "tool", "name": getattr(instance, "name", "tool")}
+                ),
+            )
+        except Exception:
+            return handler(source_type)
+
     def __repr__(self) -> str:
         return f"Tool(name='{self.name}', async={self.is_async}, permissions={[p.value for p in self.permissions]})"

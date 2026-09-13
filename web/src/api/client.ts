@@ -118,6 +118,17 @@ export const api = {
     return res.json();
   },
 
+  async cancelExecution(id: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/executions/${id}/cancel`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to cancel execution");
+    }
+    return res.json();
+  },
+
   async getAvailableNodes(): Promise<NodeDefinition[]> {
     const res = await fetch(`${API_BASE}/nodes`);
     if (!res.ok) throw new Error("Failed to load node registry");

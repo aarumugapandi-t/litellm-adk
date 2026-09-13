@@ -8,6 +8,7 @@ from ...workflow.engine import WorkflowEngine
 from ...workflow.state import ExecutionStatus
 from ...persistence.sqlite_workflow import execution_repository, workflow_repository
 from .stream import stream_manager
+from ..execution_manager import active_execution_manager
 
 router = APIRouter(tags=["Executions"])
 
@@ -31,18 +32,24 @@ async def _resume_workflow_background(
         return
 
     engine = WorkflowEngine()
+    import asyncio
+    current_task = asyncio.current_task()
+    active_execution_manager.register(exec_id, engine, state, current_task)
 
     async def _on_event(e_type: str, data: Dict[str, Any]):
         await stream_manager.broadcast(exec_id, data)
 
     engine.subscribe(_on_event)
 
-    new_state = await engine.execute(
-        workflow=wf,
-        existing_state=state,
-        human_decision=human_decision,
-    )
-    await execution_repository.save(new_state)
+    try:
+        new_state = await engine.execute(
+            workflow=wf,
+            existing_state=state,
+            human_decision=human_decision,
+        )
+        await execution_repository.save(new_state)
+    finally:
+        active_execution_manager.unregister(exec_id)
 
 
 @router.get("/executions")
@@ -58,10 +65,27 @@ async def list_executions(
 @router.get("/executions/{execution_id}")
 async def get_execution(execution_id: str) -> Dict[str, Any]:
     """Retrieves full execution state, node execution metrics, and logs."""
+    live = active_execution_manager.get_live_state(execution_id)
+    if live:
+        return live.model_dump()
+
     state = await execution_repository.get(execution_id)
     if not state:
         raise HTTPException(status_code=404, detail=f"Execution '{execution_id}' not found.")
     return state.model_dump()
+
+
+@router.post("/executions/{execution_id}/cancel")
+async def cancel_execution(execution_id: str) -> Dict[str, Any]:
+    """Cancels an active, pending, or paused workflow execution."""
+    state = await active_execution_manager.cancel(execution_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Execution '{execution_id}' not found.")
+    return {
+        "status": "cancelled",
+        "execution_id": execution_id,
+        "workflow_id": state.workflow_id,
+    }
 
 
 @router.post("/executions/{execution_id}/approve")

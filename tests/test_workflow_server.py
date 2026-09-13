@@ -142,3 +142,77 @@ def test_credentials_management_masked(client):
     # Delete
     del_resp = client.delete("/api/v1/credentials/openai_test_key")
     assert del_resp.status_code == 200
+
+
+def test_tool_serialization_in_execution_state():
+    from litellm_adk.tools.base import Tool
+    from litellm_adk.workflow.state import ExecutionState, ExecutionStatus, NodeExecutionRecord
+
+    def dummy_tool_fn(x: int) -> int:
+        """Double an integer."""
+        return x * 2
+
+    tool = Tool(dummy_tool_fn)
+
+    state = ExecutionState(
+        workflow_id="test_wf_ser",
+        execution_id="exec_test_ser_123",
+        status=ExecutionStatus.COMPLETED,
+        node_outputs={"calculator": tool},
+        node_records={
+            "calculator": NodeExecutionRecord(
+                id="rec_calc",
+                node_id="calculator",
+                node_type="tool_calculator",
+                output_data={"tool": tool},
+                metadata={"instance": tool},
+            )
+        },
+    )
+
+    # Must serialize to JSON without raising PydanticSerializationError
+    json_str = state.model_dump_json()
+    assert "dummy_tool_fn" in json_str
+
+    dumped = state.model_dump()
+    assert isinstance(dumped["node_outputs"]["calculator"], dict)
+    assert dumped["node_outputs"]["calculator"]["name"] == "dummy_tool_fn"
+
+
+def test_async_workflow_execution_immediate_lookup_and_cancel(client):
+    # Setup workflow
+    wf_payload = {
+        "id": "cancel_test_wf",
+        "name": "Cancel Test Workflow",
+        "nodes": [
+            {"id": "t1", "type": "manual_trigger", "name": "Start", "config": {}},
+            {"id": "o1", "type": "output", "name": "End", "config": {"response": "Done"}}
+        ],
+        "edges": [
+            {"id": "e1", "source": "t1", "target": "o1"}
+        ]
+    }
+    client.post("/api/v1/workflows", json=wf_payload)
+
+    # 1. Execute async
+    exec_resp = client.post(
+        "/api/v1/workflows/cancel_test_wf/execute",
+        json={"trigger_data": {}, "run_async": True}
+    )
+    assert exec_resp.status_code == 200
+    exec_id = exec_resp.json()["execution_id"]
+
+    # 2. Immediate lookup should never 404
+    get_resp = client.get(f"/api/v1/executions/{exec_id}")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["execution_id"] == exec_id
+    assert get_resp.json()["status"] in ["running", "completed", "cancelled"]
+
+    # 3. Test cancel endpoint
+    cancel_resp = client.post(f"/api/v1/executions/{exec_id}/cancel")
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] in ["cancelled", "completed"]
+
+    # 4. Clean up
+    client.delete("/api/v1/workflows/cancel_test_wf")
+

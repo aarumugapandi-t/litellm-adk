@@ -26,6 +26,15 @@ class WorkflowEngine:
         self.registry = registry or node_registry
         self.event_bus = event_bus or EventBus()
         self._event_subscribers: List[Callable[[str, Dict[str, Any]], Any]] = []
+        self._cancelled: bool = False
+        self._active_tasks: Set[asyncio.Task] = set()
+
+    def cancel(self) -> None:
+        """Cancels the currently running execution."""
+        self._cancelled = True
+        for task in list(self._active_tasks):
+            if not task.done():
+                task.cancel()
 
     def subscribe(self, callback: Callable[[str, Dict[str, Any]], Any]) -> None:
         """Subscribes an async or sync callback to receive live workflow events."""
@@ -94,8 +103,12 @@ class WorkflowEngine:
                     return False
             return True
 
-        # Loop until all reachable nodes have executed or execution is paused/failed
+        # Loop until all reachable nodes have executed or execution is paused/failed/cancelled
         while True:
+            if self._cancelled:
+                state.status = ExecutionStatus.CANCELLED
+                break
+
             # Find all nodes whose dependencies are satisfied
             ready_nodes = [
                 n for n in workflow.nodes
@@ -130,13 +143,38 @@ class WorkflowEngine:
 
                 # Aggregate inputs from all completed upstream nodes
                 node_inputs: Dict[str, Any] = {}
+                attached_tools = []
                 for edge in graph.edges_by_target.get(wnode.id, []):
                     if edge.source in state.node_outputs:
-                        node_inputs[edge.source] = state.node_outputs[edge.source]
-                
-                # If single input, also alias as 'input'
-                if len(node_inputs) == 1:
-                    node_inputs["input"] = list(node_inputs.values())[0]
+                        val = state.node_outputs[edge.source]
+                        node_inputs[edge.source] = val
+                        src_rec = state.node_records.get(edge.source)
+                        src_type = getattr(src_rec, "node_type", "") if src_rec else ""
+                        is_tool_wire = (
+                            edge.target_handle == "tools"
+                            or edge.source_handle == "tool"
+                            or (wnode.type == "agent" and "tool" in src_type)
+                        )
+                        if is_tool_wire:
+                            # Check metadata of source node for Tool object
+                            tool_candidate = (
+                                (src_rec.metadata.get("tool") if src_rec and src_rec.metadata else None)
+                                or val
+                            )
+                            if isinstance(tool_candidate, list):
+                                attached_tools.extend(tool_candidate)
+                            else:
+                                attached_tools.append(tool_candidate)
+                        elif edge.target_handle:
+                            node_inputs[edge.target_handle] = val
+
+                if attached_tools:
+                    node_inputs["tools"] = attached_tools
+
+                # If single data input (excluding tools), also alias as 'input'
+                data_inputs = [v for k, v in node_inputs.items() if k != "tools"]
+                if len(data_inputs) == 1:
+                    node_inputs["input"] = data_inputs[0]
 
                 # If this is the node resuming from human decision, inject it
                 if human_decision and state.pending_approval and state.pending_approval.get("node_id") == wnode.id:
@@ -171,6 +209,7 @@ class WorkflowEngine:
                     rec.output_data = result.output
                     rec.error = result.error
                     rec.status = result.status
+                    rec.metadata = dict(result.metadata or {})
                     rec.finished_at = datetime.now(timezone.utc).isoformat()
 
                     if result.status == ExecutionStatus.WAITING_FOR_HUMAN:
@@ -186,6 +225,12 @@ class WorkflowEngine:
                             "output": result.output,
                             "duration": duration,
                         })
+                    elif result.status == ExecutionStatus.CANCELLED:
+                        await self._emit_event("node.failed", {
+                            "execution_id": exec_id,
+                            "node_id": wnode.id,
+                            "error": "Node cancelled",
+                        })
                     else:
                         await self._emit_event("node.failed", {
                             "execution_id": exec_id,
@@ -194,6 +239,13 @@ class WorkflowEngine:
                         })
 
                     return result
+                except asyncio.CancelledError:
+                    duration = time.perf_counter() - n_start
+                    rec.duration = duration
+                    rec.status = ExecutionStatus.CANCELLED
+                    rec.error = "Node execution cancelled"
+                    rec.finished_at = datetime.now(timezone.utc).isoformat()
+                    return NodeResult(output=None, status=ExecutionStatus.CANCELLED, error="Node execution cancelled")
                 except Exception as ex:
                     duration = time.perf_counter() - n_start
                     rec.duration = duration
@@ -207,8 +259,28 @@ class WorkflowEngine:
                     })
                     return NodeResult(output=None, status=ExecutionStatus.FAILED, error=str(ex))
 
-            # Run this batch concurrently
-            results = await asyncio.gather(*(run_single_node(n) for n in ready_nodes))
+            # Run this batch concurrently with task cancellation tracking
+            tasks = [asyncio.create_task(run_single_node(n)) for n in ready_nodes]
+            for t in tasks:
+                self._active_tasks.add(t)
+
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                for t in tasks:
+                    self._active_tasks.discard(t)
+
+            if self._cancelled:
+                state.status = ExecutionStatus.CANCELLED
+                break
+
+            clean_results = []
+            for r in results:
+                if isinstance(r, Exception):
+                    clean_results.append(NodeResult(output=None, status=ExecutionStatus.FAILED, error=str(r)))
+                else:
+                    clean_results.append(r)
+            results = clean_results
 
             # Process batch outcomes
             has_pause = False
@@ -224,6 +296,8 @@ class WorkflowEngine:
                 elif res.status == ExecutionStatus.WAITING_FOR_HUMAN:
                     has_pause = True
                     state.pending_approval = res.approval_payload
+                elif res.status == ExecutionStatus.CANCELLED:
+                    state.status = ExecutionStatus.CANCELLED
                 else:
                     state.completed_nodes.append(wnode.id)
                     state.node_outputs[wnode.id] = res.output
@@ -233,6 +307,10 @@ class WorkflowEngine:
                         for edge in graph.edges_by_source.get(wnode.id, []):
                             if edge.source_handle and edge.source_handle != res.selected_handle:
                                 inactive_nodes.add(edge.target)
+
+            if state.status == ExecutionStatus.CANCELLED or self._cancelled:
+                state.status = ExecutionStatus.CANCELLED
+                break
 
             if has_failure:
                 state.status = ExecutionStatus.FAILED
@@ -259,6 +337,11 @@ class WorkflowEngine:
                 "execution_id": exec_id,
                 "workflow_id": workflow.id,
                 "errors": state.errors,
+            })
+        elif state.status == ExecutionStatus.CANCELLED:
+            await self._emit_event("workflow.cancelled", {
+                "execution_id": exec_id,
+                "workflow_id": workflow.id,
             })
 
         return state

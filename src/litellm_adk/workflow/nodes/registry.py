@@ -12,6 +12,9 @@ from .condition import ConditionNode
 from .transform import TransformNode
 from .human import HumanNode
 from .output import OutputNode
+from .tools.web_search import WebSearchToolNode
+from .tools.calculator import CalculatorToolNode
+from .tools.http import HTTPToolNode
 
 
 class NodeRegistry:
@@ -28,6 +31,9 @@ class NodeRegistry:
             LLMNode,
             AgentNode,
             ToolNode,
+            WebSearchToolNode,
+            CalculatorToolNode,
+            HTTPToolNode,
             MemoryNode,
             VectorSearchNode,
             ConditionNode,
