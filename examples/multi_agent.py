@@ -32,7 +32,9 @@ async def main():
     # 1. Specialized Researcher Agent
     researcher = Agent(
         name="Researcher",
-        model=model_name,
+        model="command-a-03-2025",  # or "claude-3-5-sonnet", "ollama/llama3", etc.
+        base_url="http://localhost:9000/v1",  # Replace with your actual base URL
+        api_key="sk-1234",  # Replace with your actual
         description="Researches technical documentation and language APIs.",
         system_prompt="You are a research specialist. Find technical details and explain them clearly.",
         tools=[search_python_docs],
@@ -41,7 +43,9 @@ async def main():
     # 2. Specialized Code Reviewer Agent
     reviewer = Agent(
         name="Reviewer",
-        model=model_name,
+        model="command-a-03-2025",  # or "claude-3-5-sonnet", "ollama/llama3", etc.
+        base_url="http://localhost:9000/v1",  # Replace with your actual base URL
+        api_key="sk-1234",  # Replace with your actual
         description="Analyzes code for bugs, syntax errors, and style issues.",
         system_prompt="You are a senior code reviewer. Verify Python code correctness.",
         tools=[check_code_syntax],
@@ -51,7 +55,9 @@ async def main():
     supervisor = Supervisor(
         name="Supervisor",
         agents=[researcher, reviewer],
-        model=model_name,
+        model="command-a-03-2025",  # or "claude-3-5-sonnet", "ollama/llama3", etc.
+        base_url="http://localhost:9000/v1",  # Replace with your actual base URL
+        api_key="sk-1234",  # Replace with your actual
         system_prompt=(
             "You are a project supervisor. Coordinate tasks across your team. "
             "Use the Researcher to look up documentation and the Reviewer to inspect code."

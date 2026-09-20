@@ -33,7 +33,7 @@ async def run_github_mcp_agent(
     token: Optional[str] = None,
 ) -> None:
     """Instantiates and executes a GitHub MCP-enabled research and automation agent."""
-    github_pat = token or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN") or os.getenv("GITHUB_TOKEN")
+    github_pat = token or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN") or os.getenv("GITHUB_TOKEN") or "kshdfkhk"
 
     print("=" * 75)
     print("LiteLLM ADK - GitHub Model Context Protocol (MCP) Agent")
@@ -56,9 +56,9 @@ async def run_github_mcp_agent(
     # performs the JSON-RPC handshake, discovers all tools, and maps their schemas.
     agent = Agent(
         name="github_agent",
-        model=os.getenv("LITELLM_MODEL", "gpt-4o"),
-        api_key=os.getenv("OPENAI_API_KEY", os.getenv("LITELLM_API_KEY")),
-        base_url=os.getenv("LITELLM_BASE_URL"),
+        model="command-a-03-2025",  # or "claude-3-5-sonnet", "ollama/llama3", etc.
+        base_url="http://localhost:9000/v1",  # Replace with your actual base URL
+        api_key="sk-1234",  # Replace with your actual
         system_prompt=(
             "You are an expert GitHub DevOps and software engineering assistant. "
             "You have direct access to GitHub tools via the Model Context Protocol (MCP). "
@@ -71,9 +71,9 @@ async def run_github_mcp_agent(
                 "transport": "stdio",
                 "command": "npx",
                 "args": ["-y", "@modelcontextprotocol/server-github"],
-                "env": {
-                    "GITHUB_PERSONAL_ACCESS_TOKEN": github_pat,
-                },
+                # "env": {
+                #     "GITHUB_PERSONAL_ACCESS_TOKEN": github_pat,
+                # },
             },
             # If using a remote hosted SSE GitHub MCP server, simply use:
             # {

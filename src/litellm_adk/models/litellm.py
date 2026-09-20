@@ -31,13 +31,24 @@ class LiteLLMModel:
                 adk_logger.warning(f"Could not instantiate litellm.Router from model_list: {e}")
                 self.router = None
 
+    @staticmethod
+    def _is_external_provider_model(model_name: str) -> bool:
+        """Determines if a model targets an external explicit provider (e.g. 'oci/xai.grok-3', 'anthropic/claude-3')
+        rather than an OpenAI-compatible proxy."""
+        if not model_name or model_name.startswith("openai/"):
+            return False
+        if "/" in model_name:
+            provider = model_name.split("/", 1)[0].lower()
+            return provider != "openai"
+        return False
+
     def _normalize_model_and_fallbacks(self) -> None:
-        """Normalizes model names and fallback configurations (e.g. adding provider prefix)."""
+        """Normalizes model names and fallback configurations."""
         base_url = (self.config.api_base or "").strip()
         model = self.config.model
 
-        # If custom base_url is used, force OpenAI-compatible proxy routing unless already prefixed
-        if base_url and not model.startswith("openai/"):
+        # Only prepend 'openai/' if base_url is specified AND model does not target an external provider
+        if base_url and not model.startswith("openai/") and not self._is_external_provider_model(model):
             adk_logger.debug(f"Custom base_url detected ({base_url}). Prepending 'openai/' to model {model}")
             self.config.model = f"openai/{model}"
 
@@ -46,19 +57,67 @@ class LiteLLMModel:
             normalized_fallbacks = []
             for fb in self.config.fallbacks:
                 if isinstance(fb, str):
-                    fb_model = fb
-                    if base_url and not fb_model.startswith("openai/"):
-                        fb_model = f"openai/{fb_model}"
-                    normalized_fallbacks.append({"model": fb_model})
+                    if self._is_external_provider_model(fb):
+                        # External provider: do not prepend openai/, do not inherit proxy base_url
+                        normalized_fallbacks.append({"model": fb, "api_base": None, "base_url": None, "api_key": None})
+                    else:
+                        fb_model = f"openai/{fb}" if (base_url and not fb.startswith("openai/")) else fb
+                        normalized_fallbacks.append({
+                            "model": fb_model,
+                            "api_base": base_url or None,
+                            "base_url": base_url or None,
+                            "api_key": self.config.api_key,
+                        })
                 elif isinstance(fb, dict):
                     fb_copy = dict(fb)
                     fb_m = fb_copy.get("model", "")
-                    if base_url and not fb_m.startswith("openai/"):
+                    if self._is_external_provider_model(fb_m):
+                        fb_copy.setdefault("api_base", None)
+                        fb_copy.setdefault("base_url", None)
+                        fb_copy.setdefault("api_key", None)
+                    elif base_url and not fb_m.startswith("openai/"):
                         fb_copy["model"] = f"openai/{fb_m}"
+                        fb_copy.setdefault("api_base", base_url)
+                        fb_copy.setdefault("base_url", base_url)
+                        fb_copy.setdefault("api_key", self.config.api_key)
                     normalized_fallbacks.append(fb_copy)
                 else:
                     normalized_fallbacks.append(fb)
             self.config.fallbacks = normalized_fallbacks
+
+    def _build_fallback_kwargs(self, base_kwargs: Dict[str, Any], fallback: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Constructs safe completion arguments for a specific fallback attempt."""
+        fb_kwargs = {k: v for k, v in base_kwargs.items() if k != "fallbacks"}
+
+        if isinstance(fallback, dict):
+            fb_copy = dict(fallback)
+            fb_model = fb_copy.pop("model", self.config.model)
+            for k, v in fb_copy.items():
+                if v is None:
+                    fb_kwargs.pop(k, None)
+                    if k in ("api_base", "base_url"):
+                        fb_kwargs.pop("api_base", None)
+                        fb_kwargs.pop("base_url", None)
+                else:
+                    fb_kwargs[k] = v
+            fb_kwargs["model"] = fb_model
+        else:
+            fb_model = str(fallback)
+            if self._is_external_provider_model(fb_model):
+                fb_kwargs.pop("base_url", None)
+                fb_kwargs.pop("api_base", None)
+                fb_kwargs.pop("api_key", None)
+                fb_kwargs["model"] = fb_model
+            else:
+                base_url = (self.config.api_base or "").strip()
+                if base_url and not fb_model.startswith("openai/"):
+                    fb_model = f"openai/{fb_model}"
+                fb_kwargs["model"] = fb_model
+                if base_url:
+                    fb_kwargs["base_url"] = base_url
+                    fb_kwargs["api_base"] = base_url
+
+        return fb_kwargs
 
     @property
     def model_name(self) -> str:
@@ -158,8 +217,9 @@ class LiteLLMModel:
 
         if self.config.api_key:
             kwargs["api_key"] = self.config.api_key
-        if self.config.api_base:
+        if self.config.api_base and not self._is_external_provider_model(self.config.model):
             kwargs["base_url"] = self.config.api_base
+            kwargs["api_base"] = self.config.api_base
         if self.config.top_p is not None:
             kwargs["top_p"] = self.config.top_p
         if self.config.max_tokens is not None:
@@ -170,8 +230,9 @@ class LiteLLMModel:
             kwargs["timeout"] = self.config.timeout
         if self.config.extra_headers:
             kwargs["extra_headers"] = self.config.extra_headers
-        if self.config.fallbacks:
-            kwargs["fallbacks"] = self.config.fallbacks
+        # Note: We do not pass fallbacks directly to litellm.acompletion because LiteLLM's internal
+        # fallback runner leaks proxy base_url into external provider models and vice versa.
+        # Instead, ADK handles fallbacks actively and cleanly in generate() / completion().
         if getattr(self.config, "caching", None) is not None:
             kwargs["caching"] = self.config.caching
         if getattr(self.config, "cache_params", None) is not None:
@@ -211,6 +272,32 @@ class LiteLLMModel:
                 raw_response = await litellm.acompletion(**call_kwargs)
             return self._parse_response(raw_response)
         except Exception as e:
+            # Active ADK-level fallback execution
+            if self.config.fallbacks:
+                adk_logger.warning(
+                    f"Primary model '{self.config.model}' invocation failed ({e}). "
+                    f"Attempting ADK fallback models..."
+                )
+                last_err = e
+                for fallback in self.config.fallbacks:
+                    fb_name = fallback.get("model") if isinstance(fallback, dict) else str(fallback)
+                    try:
+                        adk_logger.info(f"Invoking fallback model '{fb_name}'...")
+                        fb_kwargs = self._build_fallback_kwargs(call_kwargs, fallback)
+                        raw_response = await litellm.acompletion(**fb_kwargs)
+                        adk_logger.info(f"Fallback model '{fb_name}' succeeded.")
+                        return self._parse_response(raw_response)
+                    except Exception as fb_err:
+                        adk_logger.warning(f"Fallback model '{fb_name}' failed: {fb_err}")
+                        last_err = fb_err
+                        continue
+                adk_logger.error(f"Primary model and all configured fallbacks failed. Last error: {last_err}")
+                raise ModelError(
+                    message=f"Primary model '{self.config.model}' and all fallbacks failed: {last_err}",
+                    model=self.config.model,
+                    details={"call_kwargs": {k: v for k, v in call_kwargs.items() if k != "messages"}},
+                ) from last_err
+
             adk_logger.error(f"LiteLLM completion error on model '{self.config.model}': {e}")
             raise ModelError(
                 message=str(e),
@@ -234,6 +321,29 @@ class LiteLLMModel:
                 raw_response = litellm.completion(**call_kwargs)
             return self._parse_response(raw_response)
         except Exception as e:
+            if self.config.fallbacks:
+                adk_logger.warning(
+                    f"Primary model '{self.config.model}' invocation failed ({e}). "
+                    f"Attempting ADK fallback models..."
+                )
+                last_err = e
+                for fallback in self.config.fallbacks:
+                    fb_name = fallback.get("model") if isinstance(fallback, dict) else str(fallback)
+                    try:
+                        adk_logger.info(f"Invoking fallback model '{fb_name}'...")
+                        fb_kwargs = self._build_fallback_kwargs(call_kwargs, fallback)
+                        raw_response = litellm.completion(**fb_kwargs)
+                        adk_logger.info(f"Fallback model '{fb_name}' succeeded.")
+                        return self._parse_response(raw_response)
+                    except Exception as fb_err:
+                        adk_logger.warning(f"Fallback model '{fb_name}' failed: {fb_err}")
+                        last_err = fb_err
+                        continue
+                raise ModelError(
+                    message=f"Primary model '{self.config.model}' and all fallbacks failed: {last_err}",
+                    model=self.config.model,
+                ) from last_err
+
             adk_logger.error(f"LiteLLM sync completion error on model '{self.config.model}': {e}")
             raise ModelError(
                 message=str(e),

@@ -5,11 +5,23 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+class ContextPlacement(str, Enum):
+    """Placement targets for ephemeral RAG reference context."""
+
+    USER_TURN = "user_turn"
+    SYSTEM_PROMPT = "system_prompt"
+
+
 class ContextStrategy(str, Enum):
     """Strategies for pruning or compressing context to fit model windows."""
 
-    TRUNCATE = "truncate"
-    SUMMARIZE = "summarize"
+    SLIDING_WINDOW = "sliding_window"
+    SUMMARIZATION = "summarization"
+    SEMANTIC_TRUNCATION = "semantic_truncation"
+
+    # Backward compatibility aliases
+    TRUNCATE = "sliding_window"
+    SUMMARIZE = "summarization"
     PRIORITIZE = "prioritize"
 
 
@@ -36,8 +48,12 @@ class ContextWindow(BaseModel):
 
 
 class ContextPolicy(BaseModel):
-    """Configuration governing context window budgets and reduction strategies."""
+    """Configuration governing context window budgets, compaction strategies, and placement."""
 
     max_tokens: Optional[int] = Field(default=None, description="Maximum total token budget for model inputs.")
     reserve_tokens: int = Field(default=500, description="Tokens reserved for model completion output.")
-    strategy: ContextStrategy = Field(default=ContextStrategy.TRUNCATE, description="Context reduction strategy.")
+    strategy: ContextStrategy = Field(default=ContextStrategy.SLIDING_WINDOW, description="Context reduction strategy.")
+    preserve_system_prompt: bool = Field(default=True, description="Never evict system instructions.")
+    preserve_last_n_messages: int = Field(default=4, description="Number of recent messages to always preserve.")
+    summarize_model: Optional[str] = Field(default=None, description="Model to use for summarization compaction.")
+    context_placement: str = Field(default="user_turn", description="Where to inject ephemeral RAG context: 'user_turn' or 'system_prompt'.")

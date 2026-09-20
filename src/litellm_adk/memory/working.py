@@ -12,6 +12,7 @@ class WorkingMemory(BaseModel):
     observations: List[str] = Field(default_factory=list)
     tool_results: Dict[str, Any] = Field(default_factory=dict)
     variables: Dict[str, Any] = Field(default_factory=dict)
+    retrieved_documents: List[str] = Field(default_factory=list, description="Ephemeral RAG context for the active turn.")
 
     def set_task(self, task: str) -> None:
         self.current_task = task
@@ -31,6 +32,14 @@ class WorkingMemory(BaseModel):
     def get_variable(self, key: str, default: Any = None) -> Any:
         return self.variables.get(key, default)
 
+    def set_retrieved_documents(self, documents: List[str]) -> None:
+        """Stores ephemeral RAG retrieved document chunks for the active turn."""
+        self.retrieved_documents = list(documents)
+
+    def get_retrieved_documents(self) -> List[str]:
+        """Returns the ephemeral RAG documents for the active turn."""
+        return list(self.retrieved_documents)
+
     def get_summary_notes(self) -> List[str]:
         """Returns working memory notes suitable for model context injection."""
         notes = []
@@ -48,3 +57,4 @@ class WorkingMemory(BaseModel):
         self.observations.clear()
         self.tool_results.clear()
         self.variables.clear()
+        self.retrieved_documents.clear()

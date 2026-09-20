@@ -26,10 +26,27 @@ class Retriever:
         vector_store: Optional[VectorStore] = None,
         embedder: Optional[Embedder] = None,
         config: Optional[RetrievalConfig] = None,
+        top_k: Optional[int] = None,
+        similarity_threshold: Optional[float] = None,
+        min_score: Optional[float] = None,
+        namespace: Optional[str] = None,
     ):
         self.vector_store: VectorStore = vector_store or InMemoryVectorStore()
-        self.embedder: Embedder = embedder or SimpleEmbedder()
-        self.config: RetrievalConfig = config or RetrievalConfig()
+        if embedder is None and hasattr(self.vector_store, "embed") and hasattr(self.vector_store, "embed_batch"):
+            self.embedder: Embedder = self.vector_store  # type: ignore
+        else:
+            self.embedder: Embedder = embedder or SimpleEmbedder()
+
+        r_config = config or RetrievalConfig()
+        if top_k is not None:
+            r_config.top_k = top_k
+        sim_thresh = similarity_threshold if similarity_threshold is not None else min_score
+        if sim_thresh is not None:
+            r_config.similarity_threshold = sim_thresh
+        if namespace is not None:
+            r_config.namespace = namespace
+
+        self.config: RetrievalConfig = r_config
 
     async def add_documents(
         self,

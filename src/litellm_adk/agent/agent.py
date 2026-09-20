@@ -99,8 +99,12 @@ class Agent:
         instructions: Optional[str] = None,
         tools: Optional[List[Any]] = None,
         memory: Optional[BaseMemory] = None,
+        working_memory: Optional[WorkingMemory] = None,
+        long_term_memory: Optional[LongTermMemory] = None,
         vector_store: Optional[VectorStore] = None,
         retriever: Optional[Retriever] = None,
+        vector_search_threshold: Optional[float] = None,
+        retrieval_config: Optional[RetrievalConfig] = None,
         human_in_the_loop: Optional[HumanInTheLoop] = None,
         context_manager: Optional[ContextManager] = None,
         event_bus: Optional[EventBus] = None,
@@ -116,16 +120,16 @@ class Agent:
         vision_cache: Optional[Any] = None,
         config: Optional[AgentConfig] = None,
         policy_engine: Optional[Any] = None,
+        router: Optional[Any] = None,
+        model_list: Optional[List[Dict[str, Any]]] = None,
+        caching: bool = False,
+        cache_params: Optional[Dict[str, Any]] = None,
+        max_budget: Optional[float] = None,
+        mcp_servers: Optional[List[Union[str, Dict[str, Any], Any]]] = None,
+        parallel_tool_calls: Optional[bool] = None,
         **kwargs: Any,
     ):
-        # 1. Resolve configuration
-        router = kwargs.pop("router", None)
-        model_list = kwargs.pop("model_list", None)
-        caching = kwargs.pop("caching", False)
-        cache_params = kwargs.pop("cache_params", None)
-        max_budget = kwargs.pop("max_budget", None)
-        mcp_servers = kwargs.pop("mcp_servers", None)
-
+        # 1. Resolve configuration from model or explicit arguments
         if config:
             name = config.name
             description = config.description
@@ -148,18 +152,35 @@ class Agent:
             cache_params = getattr(config, "cache_params", None) or cache_params
             max_budget = getattr(config, "max_budget", None) or max_budget
             mcp_servers = getattr(config, "mcp_servers", None) or mcp_servers
+            if vector_search_threshold is None:
+                vector_search_threshold = getattr(config, "vector_search_threshold", None)
+            if retrieval_config is None:
+                retrieval_config = getattr(config, "retrieval_config", None)
+            if parallel_tool_calls is None:
+                parallel_tool_calls = getattr(config, "parallel_tool_calls", None)
             kwargs.update(config.extra_kwargs)
+
+        if kwargs:
+            adk_logger.warning(
+                "Unrecognized keyword arguments passed to LiteLLMAgent: %s. "
+                "Please verify argument spelling against the LiteLLMAgent constructor or AgentConfig.",
+                list(kwargs.keys()),
+            )
 
         if execution_config is None:
             execution_config = ExecutionConfig(max_budget=max_budget)
         elif max_budget is not None and execution_config.max_budget is None:
             execution_config.max_budget = max_budget
 
+        if parallel_tool_calls is not None:
+            execution_config.parallel_tool_calls = parallel_tool_calls
+
         self.name = name
         self.description = description
         self.system_prompt = system_prompt
         self.developer_prompt = developer_prompt
         self.instructions = instructions
+        self.execution_config = execution_config
         self.response_model = response_model
         self.vision_cache = vision_cache
         self.sub_agents: Dict[str, Any] = {}
@@ -192,8 +213,8 @@ class Agent:
 
         # 3. Memory systems
         self.conversation_memory = ConversationMemory(backend=memory or InMemoryMemory())
-        self.working_memory = WorkingMemory()
-        self.long_term_memory = LongTermMemory()
+        self.working_memory = working_memory or WorkingMemory()
+        self.long_term_memory = long_term_memory or LongTermMemory()
 
         # 4. Context management
         resolved_context_tokens = max_context_tokens or getattr(settings, "max_context_tokens", None)
@@ -224,7 +245,17 @@ class Agent:
         if retriever:
             self.retriever = retriever
         elif vector_store:
-            self.retriever = Retriever(vector_store=vector_store)
+            embedder = None
+            if hasattr(vector_store, "embed") and hasattr(vector_store, "embed_batch"):
+                embedder = vector_store  # type: ignore
+            elif hasattr(vector_store, "embedder"):
+                embedder = getattr(vector_store, "embedder")
+
+            r_config = retrieval_config
+            if r_config is None and vector_search_threshold is not None:
+                r_config = RetrievalConfig(similarity_threshold=vector_search_threshold)
+
+            self.retriever = Retriever(vector_store=vector_store, embedder=embedder, config=r_config)
         else:
             self.retriever = None
 
@@ -582,6 +613,8 @@ class Agent:
         retrieved_docs = None
         if self.retriever and isinstance(prompt, str):
             retrieved_docs = await self.retriever.retrieve_context(prompt)
+            if retrieved_docs:
+                self.working_memory.set_retrieved_documents(retrieved_docs)
 
         # Retrieve long-term memories
         mem_query = prompt if isinstance(prompt, str) else str(prompt)
@@ -608,6 +641,9 @@ class Agent:
             tools=tool_defs,
             agent_name=self.name,
         )
+
+        # Prune working memory (clearing ephemeral RAG chunks and scratchpad state)
+        self.working_memory.clear()
 
         # Sync back updated messages to conversation memory
         await self.conversation_memory.backend.clear(actual_session_id)
@@ -735,6 +771,8 @@ class Agent:
             retrieved_docs = None
             if self.retriever and isinstance(prompt, str):
                 retrieved_docs = await self.retriever.retrieve_context(prompt)
+                if retrieved_docs:
+                    self.working_memory.set_retrieved_documents(retrieved_docs)
 
             mem_query = prompt if isinstance(prompt, str) else str(prompt)
             memories = await self.long_term_memory.retrieve_relevant_facts(mem_query)
@@ -742,45 +780,48 @@ class Agent:
             tool_defs = self._resolve_runtime_tools(tools) if tools else (self.tools or None)
             resp_model = response_model or self.response_model
 
-            async for event in self.loop.stream(
-                prompt=prompt,
-                session_id=actual_session_id,
-                system_prompt=self.system_prompt,
-                conversation_history=history,
-                images=processed_images,
-                developer_prompt=self.developer_prompt,
-                working_memory_notes=self.working_memory.get_summary_notes(),
-                long_term_memories=memories,
-                retrieved_documents=retrieved_docs,
-                response_model=resp_model,
-                tools=tool_defs,
-                agent_name=self.name,
-            ):
-                if stream_events:
-                    if isinstance(event, TextDelta):
-                        yield {"type": "content", "delta": event.delta}
-                    elif isinstance(event, ToolCallStarted):
-                        yield {"type": "tool_start", "name": event.tool_name, "arguments": event.arguments}
-                    elif isinstance(event, ToolCallCompleted):
-                        yield {"type": "tool_end", "name": event.tool_name, "result": event.result}
-                    elif isinstance(event, HumanApprovalRequired):
-                        yield {
-                            "type": "requires_approval",
-                            "pending_approvals": [
-                                {
-                                    "id": event.tool_call_id,
-                                    "tool_name": event.tool_name,
-                                    "original_args": event.arguments,
-                                }
-                            ],
-                            "session_id": actual_session_id,
-                        }
-                    elif isinstance(event, dict):
-                        yield event
+            try:
+                async for event in self.loop.stream(
+                    prompt=prompt,
+                    session_id=actual_session_id,
+                    system_prompt=self.system_prompt,
+                    conversation_history=history,
+                    images=processed_images,
+                    developer_prompt=self.developer_prompt,
+                    working_memory_notes=self.working_memory.get_summary_notes(),
+                    long_term_memories=memories,
+                    retrieved_documents=retrieved_docs,
+                    response_model=resp_model,
+                    tools=tool_defs,
+                    agent_name=self.name,
+                ):
+                    if stream_events:
+                        if isinstance(event, TextDelta):
+                            yield {"type": "content", "delta": event.delta}
+                        elif isinstance(event, ToolCallStarted):
+                            yield {"type": "tool_start", "name": event.tool_name, "arguments": event.arguments}
+                        elif isinstance(event, ToolCallCompleted):
+                            yield {"type": "tool_end", "name": event.tool_name, "result": event.result}
+                        elif isinstance(event, HumanApprovalRequired):
+                            yield {
+                                "type": "requires_approval",
+                                "pending_approvals": [
+                                    {
+                                        "id": event.tool_call_id,
+                                        "tool_name": event.tool_name,
+                                        "original_args": event.arguments,
+                                    }
+                                ],
+                                "session_id": actual_session_id,
+                            }
+                        elif isinstance(event, dict):
+                            yield event
+                        else:
+                            yield {"type": event.type, **getattr(event, "data", {})}
                     else:
-                        yield {"type": event.type, **getattr(event, "data", {})}
-                else:
-                    yield event
+                        yield event
+            finally:
+                self.working_memory.clear()
 
         return AgentStream(_generator)
 

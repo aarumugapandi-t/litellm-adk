@@ -76,6 +76,11 @@ class AgentConfig(BaseModel):
     handoff_context: str = Field(default="clean", description="Context handoff strategy ('clean', 'user_only', 'full').")
     handoff_memory: str = Field(default="ephemeral", description="Memory handoff mode ('ephemeral', 'persist').")
 
+    # Retrieval and execution flags
+    vector_search_threshold: Optional[float] = Field(default=None, description="Minimum similarity threshold for vector retrieval.")
+    retrieval_config: Optional[Any] = Field(default=None, description="Configuration model for vector retrieval.")
+    parallel_tool_calls: Optional[bool] = Field(default=None, description="Execute parallel tool calls concurrently.")
+
     # Dynamic extra kwargs
     extra_kwargs: Dict[str, Any] = Field(default_factory=dict, description="Arbitrary extra kwargs for LiteLLM.")
 

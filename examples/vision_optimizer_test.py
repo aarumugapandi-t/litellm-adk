@@ -1,8 +1,10 @@
 import asyncio
 import time
 import os
+import pytest
 from litellm_adk.utils.vision import VisionOptimizer
 
+@pytest.mark.asyncio
 async def test_vision_optimization():
     print("--- Vision Optimizer Test ---")
     

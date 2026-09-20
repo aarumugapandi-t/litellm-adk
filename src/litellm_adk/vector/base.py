@@ -16,6 +16,11 @@ class VectorItem(BaseModel):
     namespace: str = "default"
     created_at: float = Field(default_factory=time.time)
 
+    @property
+    def content(self) -> str:
+        """Alias for text to support content-centric workflows."""
+        return self.text
+
 
 class VectorSearchResult(BaseModel):
     """Result from a similarity search query against a vector store."""
@@ -30,6 +35,25 @@ class VectorSearchResult(BaseModel):
     @property
     def metadata(self) -> Dict[str, Any]:
         return self.item.metadata
+
+    def __getitem__(self, key: str) -> Any:
+        if key == "text":
+            return self.text
+        elif key == "metadata":
+            return self.metadata
+        elif key == "score":
+            return self.score
+        elif key == "id":
+            return self.item.id
+        elif key == "item":
+            return self.item
+        raise KeyError(key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 @runtime_checkable

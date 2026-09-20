@@ -1,7 +1,7 @@
 """Pure Python in-memory vector store with cosine similarity."""
 
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from ..base import VectorItem, VectorSearchResult, VectorStore
 
@@ -24,8 +24,9 @@ def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
 class InMemoryVectorStore:
     """In-memory vector store requiring zero external database dependencies."""
 
-    def __init__(self):
+    def __init__(self, embedder: Optional[Any] = None):
         self._items: Dict[str, VectorItem] = {}
+        self.embedder = embedder
 
     async def add(self, items: List[VectorItem]) -> List[str]:
         """Stores vector items in memory."""
@@ -103,3 +104,58 @@ class InMemoryVectorStore:
             items.append(item)
 
         return await self.add(items)
+
+    async def add_documents(
+        self,
+        documents: List[Union[str, VectorItem, Dict[str, Any]]],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        namespace: str = "default",
+    ) -> List[str]:
+        """Convenience method matching docs snippet: await vector_store.add_documents([...])"""
+        from ..embeddings import SimpleEmbedder
+
+        items: List[VectorItem] = []
+        texts_to_embed: List[str] = []
+        indices_to_embed: List[int] = []
+
+        for i, doc in enumerate(documents):
+            if isinstance(doc, VectorItem):
+                items.append(doc)
+            elif isinstance(doc, str):
+                meta = metadatas[i] if metadatas and i < len(metadatas) else {}
+                item = VectorItem(text=doc, metadata=meta, namespace=namespace)
+                items.append(item)
+                texts_to_embed.append(doc)
+                indices_to_embed.append(i)
+            elif isinstance(doc, dict):
+                text = doc.get("text") or doc.get("content", "")
+                emb = doc.get("embedding")
+                meta = doc.get("metadata", {})
+                item = VectorItem(text=text, embedding=emb, metadata=meta, namespace=namespace)
+                items.append(item)
+                if not emb:
+                    texts_to_embed.append(text)
+                    indices_to_embed.append(i)
+
+        if texts_to_embed:
+            embedder = self.embedder or SimpleEmbedder()
+            try:
+                embeddings = await embedder.embed_batch(texts_to_embed)
+                for idx, emb in zip(indices_to_embed, embeddings):
+                    items[idx].embedding = emb
+            except Exception:
+                pass
+
+        return await self.add(items)
+
+    async def embed(self, text: str) -> List[float]:
+        """Embed a single text using configured or default embedder."""
+        from ..embeddings import SimpleEmbedder
+        embedder = self.embedder or SimpleEmbedder()
+        return await embedder.embed(text)
+
+    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Embed a batch of texts using configured or default embedder."""
+        from ..embeddings import SimpleEmbedder
+        embedder = self.embedder or SimpleEmbedder()
+        return await embedder.embed_batch(texts)
