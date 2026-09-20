@@ -1,38 +1,43 @@
 # Architecture Overview
 
-The LiteLLM ADK is designed as an orchestration layer that sits directly on top of the `litellm` library. Its primary purpose is to decouple business logic from provider-specific implementations while adding enterprise-grade resiliency.
+The **LiteLLM ADK** (Agent Development Kit) is an enterprise-grade agentic operating framework built on top of [LiteLLM](https://github.com/BerriAI/litellm). It decouples autonomous agent reasoning, dynamic tool creation, and graph workflow orchestration from proprietary vendor APIs.
 
-## High-Level Topology
+For the comprehensive in-depth architecture document, see [**01. Architecture Overview**](./01-architecture-overview.md).
+
+---
+
+## 1. High-Level Topology
 
 ```mermaid
 graph TD
-    Client[Client Application] --> |ainvoke / astream| ADK[LiteLLMAgent Orchestrator]
+    Client["Client / Canvas Studio / CLI"] --> API["FastAPI Control Plane"]
+    API --> Master["MasterAgentManager (Prompt-to-Agent Studio)"]
+    API --> Engine["WorkflowEngine (DAG Scheduler)"]
     
-    subgraph LiteLLM ADK
-        ADK --> Interceptors[Security / PII Interceptors]
-        Interceptors --> Memory[Memory Managers]
-        Memory --> Cache[Semantic Cache]
+    subgraph "ADK Execution Runtime"
+        Engine --> AgentNode["AI Agent Nodes"]
+        Engine --> ToolNode["Dynamic Tool Nodes"]
+        Engine --> HumanNode["Human Approval Nodes"]
+        
+        AgentNode --> Agent["Agent Instance"]
+        Agent --> Loop["AgentLoop (Reasoning Turns)"]
+        Loop --> Context["ContextManager (Sliding Window)"]
+        Loop --> Memory["Multi-Layer Memory (RAM, SQLite, Mongo)"]
+        Loop --> Sandbox["SafeCodeSandbox (AST Security Validator)"]
+        Loop --> Router["LiteLLM Universal Router"]
     end
     
-    Cache --> |Cache Miss| LiteLLM[LiteLLM Core]
-    LiteLLM --> API[LLM Providers: OpenAI, Anthropic, Groq, etc.]
+    Router --> Providers["100+ LLM Providers (OpenAI, Anthropic, Bedrock, Ollama, Groq)"]
 ```
 
-## Core Components
+---
 
-### 1. The Orchestrator (`LiteLLMAgent`)
-The central node of the framework. It handles the lifecycle of a request:
-1. Receives the raw prompt.
-2. Retrieves past conversational context from the Memory backend.
-3. Passes the payload through Security Interceptors (e.g., stripping internal metadata, masking PII).
-4. Forwards the payload to the LiteLLM routing layer.
-5. Handles tool execution and Human-in-the-Loop authorization.
+## 2. Core Subsystems
 
-### 2. State & Memory Adapters
-Unlike raw API calls, the ADK maintains state natively. The `BaseMemory` interface allows you to plug in different storage architectures based on your scaling needs:
-- `InMemoryMemory`: Fast, volatile storage for single-node prototypes.
-- `MongoMemory`: Persistent, horizontally scalable storage for production clusters.
-- `SQLMemory`: Relational storage leveraging SQLAlchemy.
-
-### 3. Execution Guardrails
-When an agent attempts to execute a registered tool, the framework intercepts the execution. If the tool is flagged as sensitive, the ADK halts the internal event loop and bubbles an authorization request back up to the client application, ensuring that AI-driven operations cannot mutate infrastructure without explicit permission.
+1. **Agent Engine (`src/litellm_adk/agent/`)**: Multi-turn reasoning loops, declarative configs, tool calling, and Pydantic structured output parsing. See [Agent Framework & Core Loop](./03-agent-framework.md).
+2. **Tools & Dynamic Tooling (`src/litellm_adk/tools/`)**: Typed tool decorators, `DynamicToolSpec`, AST security validator, and restricted code sandbox execution. See [Tools & Dynamic Tooling](./04-tools-and-dynamic-tooling.md).
+3. **Master Agent (`src/litellm_adk/agent/manager.py`)**: Autonomous prompt-to-agent compiler translating natural language instructions into canvas graphs. See [Master Agent & Prompt-Driven Studio](./05-master-agent-synthesis.md).
+4. **Workflow Engine (`src/litellm_adk/workflow/`)**: Asynchronous DAG scheduler with cycle detection, topological batch sorting, and live WebSocket streaming. See [Workflow Orchestration Engine](./06-workflow-orchestration-engine.md).
+5. **Memory & Context (`src/litellm_adk/memory/`, `src/litellm_adk/context/`)**: Multi-layer memory backends and sliding-window context compaction. See [Memory & Context Management](./08-memory-context-management.md).
+6. **Human-in-the-Loop (`src/litellm_adk/human/`)**: Sensitive action gating, approval audit logging, and asynchronous resumption. See [Human-in-the-Loop & Approvals](./09-human-in-the-loop-and-approvals.md).
+7. **Control Plane Server (`src/litellm_adk/server/`)**: FastAPI REST endpoints and real-time event streaming. See [REST API & Server Reference](./12-api-and-server-reference.md).

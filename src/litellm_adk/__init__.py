@@ -26,14 +26,26 @@ from .models import (
 
 # Tools
 from .tools import (
+    BaseMCPClient,
+    MCPTool,
+    MCPServerConfig,
+    SSEMCPClient,
+    StdioMCPClient,
     Tool,
     ToolExecutor,
     ToolPermission,
     ToolRegistry,
+    create_mcp_client,
+    create_mcp_tool,
+    discover_mcp_tools,
+    discover_sse_mcp_tools,
+    discover_stdio_mcp_tools,
     generate_tool_schema,
     tool,
     tool_registry,
 )
+
+
 
 # Multi-layer Memory
 from .memory import (
@@ -126,8 +138,8 @@ from .persistence import (
 )
 from .session import Session
 
-# Observability
-from .config.settings import settings
+# Observability & Config
+from .config import create_litellm_router, load_litellm_config, settings
 from .observability import (
     CostTracker,
     RunMetrics,
@@ -160,6 +172,7 @@ from .server import serve
 # Exceptions
 from .exceptions import (
     AgentError,
+    BudgetExceededError,
     ContextLimitError,
     ExecutionTimeoutError,
     HumanInterventionError,
@@ -172,6 +185,7 @@ from .exceptions import (
     ToolTimeoutError,
     VectorStoreError,
 )
+
 
 # Initialize opentelemetry automatically
 setup_litellm_telemetry()
@@ -203,6 +217,16 @@ __all__ = [
     "ToolExecutor",
     "ToolPermission",
     "generate_tool_schema",
+    "MCPTool",
+    "BaseMCPClient",
+    "StdioMCPClient",
+    "SSEMCPClient",
+    "MCPServerConfig",
+    "create_mcp_client",
+    "create_mcp_tool",
+    "discover_mcp_tools",
+    "discover_stdio_mcp_tools",
+    "discover_sse_mcp_tools",
     # Context
     "ContextManager",
     "ContextPolicy",
@@ -270,8 +294,10 @@ __all__ = [
     "RunStore",
     "InMemorySessionStore",
     "InMemoryRunStore",
-    # Observability
+    # Observability & Config
     "settings",
+    "load_litellm_config",
+    "create_litellm_router",
     "adk_logger",
     "get_tracer",
     "setup_litellm_telemetry",
@@ -284,6 +310,7 @@ __all__ = [
     "PIIScrubber",
     # Exceptions
     "AgentError",
+    "BudgetExceededError",
     "ModelError",
     "ToolError",
     "ToolTimeoutError",

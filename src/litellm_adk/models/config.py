@@ -22,9 +22,25 @@ class ModelConfig(BaseModel):
         default=None,
         description="Fallback model strings or configs if primary model fails."
     )
+    router: Optional[Any] = Field(
+        default=None,
+        description="Pre-configured litellm.Router instance for load balancing and resilient routing."
+    )
+    model_list: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="List of model deployment configurations to instantiate a LiteLLM Router."
+    )
+    caching: Optional[bool] = Field(
+        default=None,
+        description="Enable exact or semantic caching for model responses via LiteLLM."
+    )
+    cache_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Configuration parameters for LiteLLM cache backend (redis, memory, etc.)."
+    )
     extra_kwargs: Dict[str, Any] = Field(
         default_factory=dict,
         description="Additional arguments forwarded directly to litellm.completion."
     )
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)

@@ -10,12 +10,14 @@ class PIIScrubber:
     PATTERNS = {
         "SSN": r"\b\d{3}-\d{2}-\d{4}\b",
         "CREDIT_CARD": r"\b(?:\d{4}[-\s]?){3}\d{4}\b|\b\d{15,16}\b",
-        "EMAIL": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
+        "EMAIL": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
+        "API_KEY": r"\b(?:sk-[a-zA-Z0-9_\-]{20,}|ghp_[a-zA-Z0-9]{20,}|xox[baprs]-[0-9a-zA-Z]{10,})\b",
+        "BEARER_TOKEN": r"\bBearer\s+[a-zA-Z0-9_\-\.]{20,}\b",
     }
 
     @classmethod
     def scrub_text(cls, text: str) -> str:
-        """Masks PII in a single string."""
+        """Masks PII and sensitive tokens in a single string."""
         if not isinstance(text, str):
             return text
             

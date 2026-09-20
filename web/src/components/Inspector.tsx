@@ -70,9 +70,35 @@ export const Inspector: React.FC<InspectorProps> = ({
   const [customToolInput, setCustomToolInput] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  // Dynamic Tool Sandbox Testing State
+  const [toolTestArgs, setToolTestArgs] = useState<string>("{}");
+  const [toolTestResult, setToolTestResult] = useState<any>(null);
+  const [isTestingTool, setIsTestingTool] = useState<boolean>(false);
+
   useEffect(() => {
     api.getTools().then(setAvailableTools).catch(() => {});
   }, []);
+
+  const handleRunToolTest = async (codeToRun?: string) => {
+    setIsTestingTool(true);
+    setToolTestResult(null);
+    try {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(toolTestArgs);
+      } catch {
+        parsed = {};
+      }
+      const targetCode = codeToRun || (config?.code as string) || "";
+      const res = await api.testDynamicTool(targetCode, parsed);
+      setToolTestResult(res);
+    } catch (err: any) {
+      setToolTestResult({ success: false, error: err.message });
+    } finally {
+      setIsTestingTool(false);
+    }
+  };
+
 
   if (!selectedNode) {
     return (
@@ -608,9 +634,134 @@ export const Inspector: React.FC<InspectorProps> = ({
                   )}
                 </div>
               </div>
+            ) : nodeType === "dynamic_tool" ? (
+
+              <div className="space-y-4">
+                {/* Dynamic Tool Overview */}
+                <div className="p-3 rounded-xl bg-violet-950/20 border border-violet-500/30 text-xs space-y-1">
+                  <div className="flex items-center justify-between text-violet-300 font-bold">
+                    <span className="flex items-center gap-1.5">
+                      <Zap className="w-4 h-4 text-violet-400" />
+                      <span>Dynamic Tool Specification</span>
+                    </span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 uppercase font-mono">
+                      Safe Sandbox
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Custom Python skill synthesized by Master Agent. Runs in a sandboxed runtime with AST security checks.
+                  </p>
+                </div>
+
+                {/* Tool Identifier */}
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300">Tool Name</label>
+                  <input
+                    type="text"
+                    value={config.tool_name || selectedNode.data?.name || ""}
+                    onChange={(e) => handleConfigChange("tool_name", e.target.value)}
+                    placeholder="e.g. query_customer_database"
+                    className="w-full bg-[#1e293b] border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+
+                {/* Tool Description */}
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300">Description (Prompt Guidance for LLM)</label>
+                  <textarea
+                    rows={2}
+                    value={config.description || ""}
+                    onChange={(e) => handleConfigChange("description", e.target.value)}
+                    placeholder="Tells the AI Agent when and how to call this tool..."
+                    className="w-full bg-[#1e293b] border border-slate-700 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+
+                {/* Human Approval Required Toggle */}
+                <div className="flex items-center justify-between p-2.5 bg-slate-900 border border-slate-800 rounded-lg">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-200 block">Require Human Approval</span>
+                    <span className="text-[10px] text-slate-400">Pause workflow before executing sensitive actions</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(config.approval_required)}
+                    onChange={(e) => handleConfigChange("approval_required", e.target.checked)}
+                    className="w-4 h-4 rounded accent-sky-500 cursor-pointer"
+                  />
+                </div>
+
+                {/* Python Source Code Editor */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-300 flex items-center gap-1">
+                      <Code className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Python Handler (def run(...))</span>
+                    </label>
+                    <span className="text-[10px] font-mono text-slate-500">Python 3.12+</span>
+                  </div>
+                  <textarea
+                    rows={8}
+                    value={config.code || ""}
+                    onChange={(e) => handleConfigChange("code", e.target.value)}
+                    placeholder="def run(**kwargs):\n    return {'result': 'success'}"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-xs font-mono text-emerald-300 leading-snug focus:outline-none focus:border-emerald-500 whitespace-pre"
+                  />
+                </div>
+
+                {/* Interactive Tool Sandbox Tester */}
+                <div className="p-3 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Test in Python Sandbox</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleRunToolTest(config.code)}
+                      disabled={isTestingTool || !config.code}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] px-3 py-1 rounded-lg flex items-center gap-1 shadow transition"
+                    >
+                      <span>{isTestingTool ? "Testing..." : "▶ Run Test"}</span>
+                    </button>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] text-slate-400 block font-mono">Test Arguments (JSON):</label>
+                    <input
+                      type="text"
+                      value={toolTestArgs}
+                      onChange={(e) => setToolTestArgs(e.target.value)}
+                      placeholder='{"param": "sample_value"}'
+                      className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-200 focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+
+                  {toolTestResult && (
+                    <div
+                      className={`p-2.5 rounded-lg text-[11px] font-mono border space-y-1 ${
+                        toolTestResult.success
+                          ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300"
+                          : "bg-rose-950/30 border-rose-500/40 text-rose-300"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-bold">
+                        <span>{toolTestResult.success ? "✓ Output Returned" : "✗ Execution Failed"}</span>
+                        {toolTestResult.duration_seconds !== undefined && (
+                          <span className="text-[9px] text-slate-400">{toolTestResult.duration_seconds}s</span>
+                        )}
+                      </div>
+                      <pre className="text-[10px] whitespace-pre-wrap overflow-x-auto leading-tight">
+                        {JSON.stringify(toolTestResult.output || toolTestResult.error, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              </div>
             ) : (
               /* DYNAMIC CONFIGURATION FOR ALL OTHER NODES */
               <div className="space-y-4">
+
                 {Object.keys(schema).length === 0 && (
                   <p className="text-xs text-slate-500">This node does not require configuration.</p>
                 )}

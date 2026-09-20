@@ -221,3 +221,23 @@ class ExecutionTimeoutError(AgentError):
             details["timeout"] = timeout
         super().__init__(message, details)
         self.timeout = timeout
+
+
+class BudgetExceededError(AgentError):
+    """Raised when an agent execution exceeds its configured financial budget limit in USD."""
+
+    def __init__(
+        self,
+        message: str,
+        current_cost: Optional[float] = None,
+        max_budget: Optional[float] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        details = details or {}
+        if current_cost is not None:
+            details["current_cost"] = current_cost
+        if max_budget is not None:
+            details["max_budget"] = max_budget
+        super().__init__(message, details)
+        self.current_cost = current_cost
+        self.max_budget = max_budget

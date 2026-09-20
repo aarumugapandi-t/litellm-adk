@@ -7,7 +7,9 @@ import { Inspector } from "./components/Inspector";
 import { ExecutionDrawer } from "./components/ExecutionDrawer";
 import { WorkflowListModal } from "./components/WorkflowListModal";
 import { ExecutionHistoryModal } from "./components/ExecutionHistoryModal";
+import { AgentSynthesizerModal } from "./components/AgentSynthesizerModal";
 import { api } from "./api/client";
+
 import { streamClient } from "./api/websocket";
 import { WorkflowDefinition, NodeDefinition, ExecutionState, WorkflowNode } from "./types/workflow";
 
@@ -105,6 +107,7 @@ export default function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isWorkflowsModalOpen, setIsWorkflowsModalOpen] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [isSynthesizerOpen, setIsSynthesizerOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(null);
@@ -480,6 +483,18 @@ export default function App() {
     input.click();
   };
 
+  const handleApplySynthesizedGraph = (synthesizedGraph: { nodes: any[]; edges: any[] }, agentSpec: any) => {
+    const newWf: WorkflowDefinition = {
+      ...workflow,
+      id: `wf_${(agentSpec.name || "agent").toLowerCase()}_${Date.now().toString().slice(-4)}`,
+      name: `${agentSpec.name || "AI"} Pipeline`,
+      description: agentSpec.description || `Autonomous pipeline powered by ${agentSpec.name}`,
+      nodes: synthesizedGraph.nodes,
+      edges: synthesizedGraph.edges,
+    };
+    loadWorkflowIntoCanvas(newWf);
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen bg-[#0b0f19] text-slate-100 overflow-hidden font-sans">
       <Header
@@ -490,11 +505,13 @@ export default function App() {
         onStop={handleStop}
         onOpenWorkflowsList={() => setIsWorkflowsModalOpen(true)}
         onOpenHistory={() => setIsHistoryModalOpen(true)}
+        onOpenSynthesizer={() => setIsSynthesizerOpen(true)}
         onExport={handleExport}
         onImport={handleImport}
         isSaving={isSaving}
         isRunning={isRunning}
       />
+
 
       <div className="flex-1 flex relative overflow-hidden">
         <NodePalette availableNodes={availableNodes} onAddNode={handleAddNodeFromPalette} />
@@ -568,6 +585,14 @@ export default function App() {
           setIsDrawerOpen(true);
         }}
       />
+
+      <AgentSynthesizerModal
+        isOpen={isSynthesizerOpen}
+        onClose={() => setIsSynthesizerOpen(false)}
+        onApplyGraph={handleApplySynthesizedGraph}
+        currentWorkflow={workflow}
+      />
     </div>
   );
 }
+

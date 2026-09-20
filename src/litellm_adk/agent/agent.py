@@ -30,6 +30,7 @@ from ..observability.logger import adk_logger
 from ..session.session import Session
 from ..tools.base import Tool
 from ..tools.executor import ToolExecutor
+from ..tools.mcp import MCPTool, create_mcp_client, create_mcp_tool
 from ..tools.permissions import ToolPermission
 from ..tools.registry import ToolRegistry, tool_registry
 from ..vector.base import VectorStore
@@ -118,6 +119,13 @@ class Agent:
         **kwargs: Any,
     ):
         # 1. Resolve configuration
+        router = kwargs.pop("router", None)
+        model_list = kwargs.pop("model_list", None)
+        caching = kwargs.pop("caching", False)
+        cache_params = kwargs.pop("cache_params", None)
+        max_budget = kwargs.pop("max_budget", None)
+        mcp_servers = kwargs.pop("mcp_servers", None)
+
         if config:
             name = config.name
             description = config.description
@@ -134,7 +142,18 @@ class Agent:
             scrub_pii = config.scrub_pii or scrub_pii
             use_global_tools = config.use_global_tools or use_global_tools
             execution_config = config.execution or execution_config
+            router = getattr(config, "router", None) or router
+            model_list = getattr(config, "model_list", None) or model_list
+            caching = getattr(config, "caching", False) or caching
+            cache_params = getattr(config, "cache_params", None) or cache_params
+            max_budget = getattr(config, "max_budget", None) or max_budget
+            mcp_servers = getattr(config, "mcp_servers", None) or mcp_servers
             kwargs.update(config.extra_kwargs)
+
+        if execution_config is None:
+            execution_config = ExecutionConfig(max_budget=max_budget)
+        elif max_budget is not None and execution_config.max_budget is None:
+            execution_config.max_budget = max_budget
 
         self.name = name
         self.description = description
@@ -148,6 +167,8 @@ class Agent:
         self.base_url = base_url or settings.base_url
         self.policy_engine = policy_engine or kwargs.get("policy_engine")
         self.scrub_pii = scrub_pii
+        self.total_cost_usd: float = 0.0
+        self.total_tokens_used: int = 0
 
         # 2. Model gateway initialization
         resolved_model_name = model or settings.model or "gpt-4o"
@@ -161,6 +182,10 @@ class Agent:
                 api_key=api_key or settings.api_key,
                 api_base=base_url or settings.base_url,
                 fallbacks=fallbacks,
+                router=router,
+                model_list=model_list,
+                caching=caching,
+                cache_params=cache_params,
                 extra_kwargs=kwargs,
             )
             self.model = LiteLLMModel(model_cfg)
@@ -183,6 +208,14 @@ class Agent:
 
         if tools:
             self._register_provided_tools(tools)
+
+        self.mcp_servers: List[Any] = list(mcp_servers) if mcp_servers else []
+        self._mcp_clients: List[Any] = []
+        self._mcp_initialized: bool = False
+        self._mcp_init_lock: Optional[asyncio.Lock] = None
+
+        if self.mcp_servers:
+            self._mount_provided_mcp_servers(self.mcp_servers)
 
         self.tool_executor = ToolExecutor(registry=self.tool_registry)
 
@@ -247,8 +280,32 @@ class Agent:
             elif callable(item):
                 self.tool_registry.register(item)
             elif isinstance(item, dict):
+                # 1. Check if dictionary contains dynamic tool code
+                if "code" in item:
+                    try:
+                        from ..tools.dynamic_tool import DynamicToolSpec, create_dynamic_tool_instance
+                        spec = DynamicToolSpec(
+                            name=item.get("name") or item.get("tool_name", "custom_dynamic_tool"),
+                            description=item.get("description", "Dynamic tool"),
+                            parameters=item.get("parameters", {}),
+                            code=item["code"],
+                            timeout_seconds=float(item.get("timeout_seconds", 10.0)),
+                            approval_required=bool(item.get("approval_required", False)),
+                        )
+                        dyn_tool = create_dynamic_tool_instance(spec)
+                        self.tool_registry.register_tool(dyn_tool)
+                        continue
+                    except Exception as e:
+                        adk_logger.warning(f"Failed to instantiate DynamicTool from dict spec: {e}")
+
+                # 2. Check if named tool is registered in global registry
                 fn = item.get("function", item)
-                t_name = fn.get("name", "custom_tool")
+                t_name = fn.get("name") or item.get("name", "custom_tool")
+                registered_tool = tool_registry.get_tool(t_name)
+                if registered_tool:
+                    self.tool_registry.register_tool(registered_tool)
+                    continue
+
                 t_desc = fn.get("description", "")
                 t_params = fn.get("parameters", {})
                 dummy_tool = Tool(
@@ -274,6 +331,110 @@ class Agent:
 
             sa_name = getattr(agent_instance, "name", str(uuid.uuid4()))
             self.sub_agents[sa_name] = agent_instance
+
+    def _mount_provided_mcp_servers(self, mcp_servers: List[Any]) -> None:
+        """Mounts pre-configured static MCP tools to the agent's tool registry."""
+        for s in mcp_servers:
+            if isinstance(s, MCPTool):
+                self.tool_registry.register_tool(s)
+            elif (
+                isinstance(s, dict)
+                and "name" in s
+                and "parameters" in s
+                and ("endpoint_url" in s or "url" in s)
+                and "command" not in s
+                and s.get("transport") != "sse"
+            ):
+                s_name = s.get("name", "mcp_service")
+                s_url = s.get("http_url") or s.get("url") or s.get("endpoint_url")
+                s_desc = s.get("description", f"MCP Tool from {s_name}")
+                s_params = s.get("parameters", {})
+                tool = create_mcp_tool(
+                    name=s_name,
+                    description=s_desc,
+                    parameters=s_params,
+                    endpoint_url=s_url,
+                )
+                self.tool_registry.register_tool(tool)
+
+    async def initialize_mcp_servers(self) -> None:
+        """Connects to configured external MCP servers, dynamically discovers tools, and mounts them."""
+        if self._mcp_initialized or not self.mcp_servers:
+            return
+
+        if self._mcp_init_lock is None:
+            self._mcp_init_lock = asyncio.Lock()
+
+        async with self._mcp_init_lock:
+            if self._mcp_initialized:
+                return
+
+            for s in self.mcp_servers:
+                # If already registered as static tool, skip client connection
+                if isinstance(s, MCPTool):
+                    continue
+                if (
+                    isinstance(s, dict)
+                    and "name" in s
+                    and "parameters" in s
+                    and ("endpoint_url" in s or "url" in s)
+                    and "command" not in s
+                    and s.get("transport") != "sse"
+                ):
+                    continue
+
+                try:
+                    client = create_mcp_client(s)
+                    await client.connect()
+                    discovered_tools = await client.get_tools()
+                    for t in discovered_tools:
+                        self.tool_registry.register_tool(t)
+                    self._mcp_clients.append(client)
+                    adk_logger.info(
+                        "Mounted %d dynamic MCP tools from server (%s)",
+                        len(discovered_tools),
+                        getattr(s, "name", None) or getattr(client, "command", getattr(client, "url", "mcp_server")),
+                    )
+                except Exception as exc:
+                    adk_logger.error("Failed to initialize MCP server '%s': %s", s, exc)
+                    raise RuntimeError(f"Failed to initialize MCP server '{s}': {exc}") from exc
+
+            self._mcp_initialized = True
+
+    async def close_mcp_servers(self) -> None:
+        """Closes all active MCP client sessions and releases background resources."""
+        for client in self._mcp_clients:
+            try:
+                await client.close()
+            except Exception as e:
+                adk_logger.warning("Error disconnecting MCP client: %s", e)
+        self._mcp_clients.clear()
+        self._mcp_initialized = False
+    def mount_mcp_tool(self, tool: Any) -> None:
+        """Mounts an MCP Tool directly to this Agent's tool registry."""
+        self.tool_registry.register_tool(tool)
+
+
+    @classmethod
+    def from_litellm_config(
+        cls,
+        config_path_or_dict: Union[str, Dict[str, Any]],
+        agent_name: str = "LiteLLMAgent",
+        **override_kwargs: Any,
+    ) -> "Agent":
+        """Instantiates an Agent directly configured from LiteLLM proxy_server_config.yaml or config.yaml."""
+        cfg = AgentConfig.from_litellm_config(config_path_or_dict, agent_name=agent_name, **override_kwargs)
+        return cls(config=cfg)
+
+    @property
+    def cost_usd(self) -> float:
+        """Cumulative execution cost in USD for this agent across runs."""
+        return self.total_cost_usd
+
+    @property
+    def total_tokens(self) -> int:
+        """Cumulative token usage for this agent across runs."""
+        return self.total_tokens_used
 
     @property
     def tools(self) -> List[Dict[str, Any]]:
@@ -408,6 +569,10 @@ class Agent:
         target_session = session or session_id or kwargs.pop("session_id", None)
         actual_session_id = target_session.id if isinstance(target_session, Session) else (target_session or str(uuid.uuid4()))
 
+        # Ensure configured MCP servers are dynamically initialized before reasoning loop
+        if self.mcp_servers and not self._mcp_initialized:
+            await self.initialize_mcp_servers()
+
         # Optimize/process images if present
         processed_images = None
         if images:
@@ -447,6 +612,10 @@ class Agent:
         # Sync back updated messages to conversation memory
         await self.conversation_memory.backend.clear(actual_session_id)
         await self.conversation_memory.backend.add_messages(actual_session_id, history)
+
+        # Update cumulative spend and token tracking
+        self.total_cost_usd += getattr(result, "cost_usd", 0.0)
+        self.total_tokens_used += getattr(result, "total_tokens", 0)
 
         return result
 
@@ -555,6 +724,10 @@ class Agent:
         actual_session_id = target_session.id if isinstance(target_session, Session) else (target_session or str(uuid.uuid4()))
 
         async def _generator() -> AsyncIterator[Union[Event, Dict[str, Any]]]:
+            # Ensure configured MCP servers are dynamically initialized before streaming
+            if self.mcp_servers and not self._mcp_initialized:
+                await self.initialize_mcp_servers()
+
             processed_images = None
             if images:
                 processed_images = await self._process_images_async(images)
@@ -691,16 +864,20 @@ class Agent:
         return cls(config=cfg, **kwargs)
 
     async def aclose(self) -> None:
-        """Closes model client connections and memory resources."""
+        """Closes model client connections, MCP servers, and memory resources."""
+        await self.close_mcp_servers()
         await self.model.aclose()
         if hasattr(self.conversation_memory, "close"):
             await self.conversation_memory.close()
 
     async def __aenter__(self) -> "Agent":
+        if self.mcp_servers and not self._mcp_initialized:
+            await self.initialize_mcp_servers()
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.aclose()
+
 
 
 # Backward compatibility subclass/alias

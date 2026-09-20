@@ -21,6 +21,7 @@ from ..events.types import (
 )
 from ..exceptions import (
     AgentError,
+    BudgetExceededError,
     ExecutionTimeoutError,
     HumanInterventionError,
     MaxIterationsError,
@@ -239,6 +240,16 @@ class AgentLoop:
                 accumulated_usage.prompt_tokens += response.usage.prompt_tokens
                 accumulated_usage.completion_tokens += response.usage.completion_tokens
                 accumulated_usage.total_tokens += response.usage.total_tokens
+                accumulated_usage.estimated_cost += response.usage.estimated_cost
+
+                # Enforce financial budget limit
+                if getattr(self.config, "max_budget", None) is not None and accumulated_usage.estimated_cost > self.config.max_budget:
+                    state.transition(AgentLifecycleState.FAILED, error=f"Budget exceeded: ${accumulated_usage.estimated_cost:.4f} > ${self.config.max_budget:.4f}")
+                    raise BudgetExceededError(
+                        f"Agent execution exceeded max budget of ${self.config.max_budget:.4f} (current spend: ${accumulated_usage.estimated_cost:.4f})",
+                        current_cost=accumulated_usage.estimated_cost,
+                        max_budget=self.config.max_budget,
+                    )
 
                 # 3. ACT (Check for Tool Calls)
                 if response.tool_calls:

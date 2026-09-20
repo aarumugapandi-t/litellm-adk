@@ -21,6 +21,16 @@ class LiteLLMModel:
 
         self._normalize_model_and_fallbacks()
 
+        # Initialize LiteLLM Router if router instance or model_list provided
+        self.router = getattr(self.config, "router", None)
+        if not self.router and getattr(self.config, "model_list", None):
+            try:
+                self.router = litellm.Router(model_list=self.config.model_list)
+                adk_logger.info(f"Initialized litellm.Router for model '{self.config.model}' with {len(self.config.model_list)} deployments.")
+            except Exception as e:
+                adk_logger.warning(f"Could not instantiate litellm.Router from model_list: {e}")
+                self.router = None
+
     def _normalize_model_and_fallbacks(self) -> None:
         """Normalizes model names and fallback configurations (e.g. adding provider prefix)."""
         base_url = (self.config.api_base or "").strip()
@@ -162,6 +172,10 @@ class LiteLLMModel:
             kwargs["extra_headers"] = self.config.extra_headers
         if self.config.fallbacks:
             kwargs["fallbacks"] = self.config.fallbacks
+        if getattr(self.config, "caching", None) is not None:
+            kwargs["caching"] = self.config.caching
+        if getattr(self.config, "cache_params", None) is not None:
+            kwargs["cache_params"] = self.config.cache_params
 
         # Merge tools if provided
         if tools:
@@ -180,12 +194,18 @@ class LiteLLMModel:
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> ModelResponse:
-        """Executes asynchronous LLM completion call via LiteLLM."""
+        """Executes asynchronous LLM completion call via LiteLLM or LiteLLM Router."""
         call_kwargs = self._build_completion_kwargs(messages, tools=tools, stream=False, **kwargs)
 
         try:
             from unittest.mock import Mock
-            if isinstance(getattr(litellm, "completion", None), Mock) and not isinstance(getattr(litellm, "acompletion", None), Mock):
+            # Route through Router if configured
+            if self.router is not None:
+                if isinstance(getattr(self.router, "completion", None), Mock) and not isinstance(getattr(self.router, "acompletion", None), Mock):
+                    raw_response = self.router.completion(**call_kwargs)
+                else:
+                    raw_response = await self.router.acompletion(**call_kwargs)
+            elif isinstance(getattr(litellm, "completion", None), Mock) and not isinstance(getattr(litellm, "acompletion", None), Mock):
                 raw_response = litellm.completion(**call_kwargs)
             else:
                 raw_response = await litellm.acompletion(**call_kwargs)
@@ -204,11 +224,14 @@ class LiteLLMModel:
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> ModelResponse:
-        """Executes synchronous LLM completion call via LiteLLM."""
+        """Executes synchronous LLM completion call via LiteLLM or LiteLLM Router."""
         call_kwargs = self._build_completion_kwargs(messages, tools=tools, stream=False, **kwargs)
 
         try:
-            raw_response = litellm.completion(**call_kwargs)
+            if self.router is not None:
+                raw_response = self.router.completion(**call_kwargs)
+            else:
+                raw_response = litellm.completion(**call_kwargs)
             return self._parse_response(raw_response)
         except Exception as e:
             adk_logger.error(f"LiteLLM sync completion error on model '{self.config.model}': {e}")
@@ -223,11 +246,15 @@ class LiteLLMModel:
         tools: Optional[List[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[ModelStreamChunk]:
-        """Streams chunks asynchronously from LiteLLM."""
+        """Streams chunks asynchronously from LiteLLM or LiteLLM Router."""
         call_kwargs = self._build_completion_kwargs(messages, tools=tools, stream=True, **kwargs)
 
         try:
-            raw_stream = await litellm.acompletion(**call_kwargs)
+            if self.router is not None:
+                raw_stream = await self.router.acompletion(**call_kwargs)
+            else:
+                raw_stream = await litellm.acompletion(**call_kwargs)
+
             async for chunk in raw_stream:
                 choices = getattr(chunk, "choices", [])
                 if not choices:
@@ -303,6 +330,14 @@ class LiteLLMModel:
                 usage.total_tokens = int(getattr(raw_usage, "total_tokens", 0) or 0)
             except Exception:
                 pass
+
+        # Calculate exact cost via LiteLLM completion_cost
+        try:
+            cost = litellm.completion_cost(completion_response=raw_response)
+            if cost is not None:
+                usage.estimated_cost = float(cost)
+        except Exception:
+            pass
 
         return ModelResponse(
             content=content,

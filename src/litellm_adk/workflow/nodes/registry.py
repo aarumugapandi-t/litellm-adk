@@ -15,6 +15,7 @@ from .output import OutputNode
 from .tools.web_search import WebSearchToolNode
 from .tools.calculator import CalculatorToolNode
 from .tools.http import HTTPToolNode
+from .tools.dynamic_tool_node import DynamicToolNode
 
 
 class NodeRegistry:
@@ -34,6 +35,7 @@ class NodeRegistry:
             WebSearchToolNode,
             CalculatorToolNode,
             HTTPToolNode,
+            DynamicToolNode,
             MemoryNode,
             VectorSearchNode,
             ConditionNode,
@@ -41,6 +43,7 @@ class NodeRegistry:
             HumanNode,
             OutputNode,
         ]
+
         for cls in builtins:
             instance = cls()
             self._node_classes[instance.definition.type] = cls

@@ -102,3 +102,49 @@ export interface ExecutionState {
   total_tokens: number;
   estimated_cost: number;
 }
+
+export interface ManagerStatus {
+  ready: boolean;
+  model: string;
+  api_base?: string;
+  has_key: boolean;
+}
+
+export interface DynamicToolDefinition {
+  id?: string;
+  name: string;
+  description: string;
+  parameters: Record<string, any>;
+  code: string;
+  approval_required?: boolean;
+  credentials?: string[];
+  timeout_seconds?: number;
+}
+
+export interface AgentSynthesisResult {
+  prompt: string;
+  agent_spec: {
+    name: string;
+    role: string;
+    description: string;
+    system_prompt: string;
+    recommended_model: string;
+    temperature: number;
+  };
+  dynamic_tools: DynamicToolDefinition[];
+  prebuilt_tools: string[];
+  graph: {
+    nodes: WorkflowNode[];
+    edges: WorkflowEdge[];
+  };
+  summary: string;
+}
+
+export interface ManagerTemplate {
+  id: string;
+  title: string;
+  prompt: string;
+  category: string;
+  tags: string[];
+}
+

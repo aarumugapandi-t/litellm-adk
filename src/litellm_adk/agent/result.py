@@ -17,6 +17,12 @@ class ToolCallRecord(BaseModel):
     duration: float = 0.0
     approved: bool = True
 
+    @property
+    def tool_name(self) -> str:
+        """Alias for name for compatibility across examples and frameworks."""
+        return self.name
+
+
 
 class AgentResult(BaseModel):
     """Structured result returned from an agent execution run."""
@@ -33,6 +39,26 @@ class AgentResult(BaseModel):
 
     status: str = Field(default="completed", description="Execution status e.g. completed, requires_approval, error.")
     pending_approvals: List[Dict[str, Any]] = Field(default_factory=list, description="Pending human approval requests if paused.")
+
+    @property
+    def cost_usd(self) -> float:
+        """Total execution cost in USD calculated via LiteLLM pricing database."""
+        return self.usage.estimated_cost
+
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens used during the execution run."""
+        return self.usage.total_tokens
+
+    @property
+    def prompt_tokens(self) -> int:
+        """Total prompt tokens used during the execution run."""
+        return self.usage.prompt_tokens
+
+    @property
+    def completion_tokens(self) -> int:
+        """Total completion tokens generated during the execution run."""
+        return self.usage.completion_tokens
 
     # Backward compatibility properties with AgentResponse
     @property

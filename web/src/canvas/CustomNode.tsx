@@ -20,6 +20,7 @@ import {
   ExternalLink,
   Key,
   Plus,
+  Zap,
 } from "lucide-react";
 import { ExecutionStatus } from "../types/workflow";
 
@@ -33,6 +34,7 @@ const ICON_MAP: Record<string, React.ElementType> = {
   web_search_tool: Globe,
   calculator_tool: Calculator,
   http_tool: ExternalLink,
+  dynamic_tool: Zap,
   memory: Database,
   vector_search: Search,
   condition: GitBranch,
@@ -501,8 +503,30 @@ export const CustomNode = memo(({ id, data, selected }: NodeProps) => {
               </p>
             </div>
           )}
+
+          {nodeType === "dynamic_tool" && (
+            <div className="text-[10px] text-slate-300 bg-slate-900/60 border border-violet-500/30 p-2 rounded space-y-1">
+              <div className="flex justify-between items-center text-slate-200 font-bold">
+                <span className="flex items-center gap-1 text-violet-300">
+                  <Zap className="w-3.5 h-3.5 text-violet-400" />
+                  <span>{config.tool_name || name}</span>
+                </span>
+                <span className="font-mono text-[9px] bg-violet-950/80 text-violet-300 px-1.5 py-0.5 rounded border border-violet-500/40">
+                  Python
+                </span>
+              </div>
+              <p className="text-[9px] text-slate-400 line-clamp-2 leading-tight">
+                {config.description || "LLM-generated dynamic Python skill"}
+              </p>
+              <div className="flex items-center justify-between text-[8px] text-slate-500 pt-0.5 font-mono">
+                <span>{config.approval_required ? "🔒 Approval Gated" : "⚡ Autonomous"}</span>
+                <span>Sandbox Verified</span>
+              </div>
+            </div>
+          )}
         </div>
       )}
+
 
       {/* Trigger Node Wiring Instructions */}
       {nodeType.includes("trigger") && (

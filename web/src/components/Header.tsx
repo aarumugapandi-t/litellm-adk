@@ -10,6 +10,7 @@ import {
   Check,
   Zap,
   RotateCcw,
+  Sparkles,
 } from "lucide-react";
 import { WorkflowDefinition } from "../types/workflow";
 
@@ -21,11 +22,13 @@ interface HeaderProps {
   onStop?: () => void;
   onOpenWorkflowsList: () => void;
   onOpenHistory: () => void;
+  onOpenSynthesizer?: () => void;
   onExport: () => void;
   onImport: () => void;
   isSaving: boolean;
   isRunning: boolean;
 }
+
 
 export const Header: React.FC<HeaderProps> = ({
   workflow,
@@ -35,6 +38,7 @@ export const Header: React.FC<HeaderProps> = ({
   onStop,
   onOpenWorkflowsList,
   onOpenHistory,
+  onOpenSynthesizer,
   onExport,
   onImport,
   isSaving,
@@ -102,6 +106,20 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2">
+        {/* ✨ Prompt-to-Agent Studio Trigger */}
+        {onOpenSynthesizer && (
+          <button
+            onClick={onOpenSynthesizer}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white text-xs font-bold shadow-md shadow-sky-500/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+            title="Create agents and dynamic tools from natural language prompt"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>✨ Prompt to Agent</span>
+          </button>
+        )}
+
+        <div className="h-4 w-px bg-slate-800 mx-0.5" />
+
         <button
           onClick={onOpenWorkflowsList}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-xs font-medium text-slate-200 transition"

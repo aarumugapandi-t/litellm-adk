@@ -43,6 +43,12 @@ class CacheManager:
         )
         
     @classmethod
+    def enable_in_memory_cache(cls):
+        """Enables fast in-memory LRU caching directly via LiteLLM."""
+        adk_logger.info("Enabling in-memory LRU cache via LiteLLM.")
+        litellm.cache = litellm.Cache(type="local")
+
+    @classmethod
     def disable_cache(cls):
         """Disables global litellm caching."""
         litellm.cache = None

@@ -1,71 +1,92 @@
-# Advanced Patterns
+# Advanced Multi-Agent Patterns
 
-Once you've mastered the basic agent orchestration, the ADK provides native paradigms for handling complex, enterprise-level topologies.
+This guide covers advanced enterprise topologies in the LiteLLM ADK, including supervisor coordination, dynamic control handoffs, and human-in-the-loop authorization.
 
-## 1. Declarative Multi-Agent Topologies (YAML)
+For the complete technical references, see:
+- [**10. Multi-Agent Orchestration & Handoffs**](./10-multi-agent-orchestration.md)
+- [**09. Human-in-the-Loop & Approvals**](./09-human-in-the-loop-and-approvals.md)
+- [**06. Workflow Orchestration Engine**](./06-workflow-orchestration-engine.md)
 
-Hardcoding complex networks of agents in raw Python tightly couples your architecture to your codebase, making it difficult to refactor or visualize. The ADK allows you to map out your agent topologies using declarative YAML files.
+---
 
-```yaml
-# customer_service.yaml
-name: TriageAgent
-model: groq/qwen/qwen3-32b
-system_prompt: |
-  You are the primary triage router. 
-  Transfer users to the BillingAgent if they have payment issues, otherwise handle it yourself.
+## 1. Supervisor & Worker Coordination
 
-sub_agents:
-  - name: BillingAgent
-    model: groq/qwen/qwen3-32b
-    system_prompt: "You are the billing specialist. You process refunds."
-    tools: ["issue_refund"]
-```
-
-To deploy this topology:
-```python
-from litellm_adk import LiteLLMAgent
-
-# Instantiates the master agent and recursively injects the sub-agents and tool capabilities
-agent = LiteLLMAgent.from_yaml("customer_service.yaml")
-```
-
-The ADK natively handles the contextual transfer operations behind the scenes, ensuring the `BillingAgent` inherits the conversation context without requiring you to manually pass memory arrays.
-
-## 2. Human-in-the-Loop (HITL) Authorization
-
-Autonomous agents should not have uncontrolled access to destructive or financial functions. The ADK natively supports authorization intercepts.
-
-By flagging a tool in the registry:
-```python
-@tool_registry.register(requires_approval=True)
-def wipe_database(cluster_id: str):
-    """Irreversible destructive operation."""
-    pass
-```
-
-You can utilize the `astream` asynchronous generator to pause the execution event loop cleanly:
-```python
-async for event in agent.astream("Wipe cluster US-EAST"):
-    if event["type"] == "requires_approval":
-        # The generator pauses here! 
-        print(f"Agent attempting to call: {event['pending_approvals']}")
-        
-        # You can prompt a human, wait for a web-hook, or await a UI button click...
-        decision = {"status": "approved"}
-        
-        # Once approved, the loop naturally resumes and executes the tool.
-```
-
-## 3. Semantic Caching
-
-In high-traffic environments, repeated identical (or semantically similar) queries can rapidly drain budgets and hit rate limits. The ADK integrates with vector-native caching backends (like Redis and Dragonfly).
+Wrap specialized agents as tools and equip them to a coordinator using `Supervisor`:
 
 ```python
-from litellm_adk.caching import CacheManager
+import asyncio
+from litellm_adk import Agent
+from litellm_adk.multiagent import Supervisor
 
-# Enabling semantic caching requires an embedding model (default: OpenAI text-embedding-ada-002)
-# Ensure OPENAI_API_KEY is in your environment.
-CacheManager.enable_redis_cache(host="127.0.0.1", port=6379, semantic=True)
+sql_agent = Agent(
+    name="DatabaseAnalyst",
+    model="gpt-4o",
+    system_prompt="You write and execute SQL queries to retrieve order records.",
+)
+
+email_agent = Agent(
+    name="CommunicationsAgent",
+    model="gpt-4o",
+    system_prompt="You draft and send customer notifications.",
+)
+
+supervisor = Supervisor(
+    name="CustomerSupportLead",
+    model="gpt-4o",
+    agents=[sql_agent, email_agent],
+    system_prompt="Coordinate customer support tasks by delegating to DatabaseAnalyst and CommunicationsAgent.",
+)
+
+async def main():
+    result = await supervisor.ainvoke(
+        "Look up order ORD-1029 for customer David and email him an update on shipping status."
+    )
+    print(result.text)
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-With semantic caching enabled, if User A asks "How do I reset my password?" and User B asks "What's the process to recover my login?", the ADK recognizes the vector similarity and serves the cached response to User B instantly without ever contacting the LLM API.
+---
+
+## 2. Dynamic Control Handoffs (`HandoffAgent`)
+
+For conversational systems where control transitions permanently to another agent:
+
+```python
+from litellm_adk.handoff import HandoffAgent
+
+def transfer_to_billing(account_id: str):
+    """Transfers the live conversation to the specialized billing agent."""
+    raise HandoffAgent("BillingSpecialist", account_id=account_id)
+```
+
+The runtime catches `HandoffAgent`, swaps the active agent context, and resumes the dialogue seamlessly.
+
+---
+
+## 3. Human-in-the-Loop (HITL) Guardrails
+
+Flag sensitive tools with `requires_approval=True` to halt the execution loop until signed off:
+
+```python
+from litellm_adk.tools import tool, ToolPermission
+from litellm_adk.human import SQLiteApprovalManager
+
+@tool(
+    name="reboot_production_server",
+    description="Reboots a production compute node.",
+    permissions={ToolPermission.DANGEROUS},
+    requires_approval=True,
+)
+def reboot_server(server_id: str) -> dict:
+    return {"status": "rebooting", "server": server_id}
+
+agent = Agent(
+    model="gpt-4o",
+    tools=[reboot_server],
+    approval_manager=SQLiteApprovalManager("workflows.db"),
+)
+```
+
+If the agent decides to invoke `reboot_production_server`, the execution transitions to `requires_approval` and yields back to the application or UI, awaiting an operator's approval.

@@ -140,4 +140,66 @@ export const api = {
     if (!res.ok) return [];
     return res.json();
   },
+
+  // Master Agent & Dynamic Tooling APIs
+  async getManagerStatus(): Promise<any> {
+    const res = await fetch(`${API_BASE}/manager/status`);
+    if (!res.ok) throw new Error("Failed to fetch manager status");
+    return res.json();
+  },
+
+  async configureManager(model: string, apiKey?: string, apiBase?: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/manager/configure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, api_key: apiKey, api_base: apiBase }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to configure master agent");
+    }
+    return res.json();
+  },
+
+  async testManagerConnection(): Promise<any> {
+    const res = await fetch(`${API_BASE}/manager/test-connection`, { method: "POST" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to test connection");
+    }
+    return res.json();
+  },
+
+  async synthesizeAgent(prompt: string, existingWorkflow?: any): Promise<any> {
+    const res = await fetch(`${API_BASE}/manager/synthesize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, existing_workflow: existingWorkflow }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to synthesize agent");
+    }
+    return res.json();
+  },
+
+  async testDynamicTool(code: string, args: Record<string, any> = {}, timeoutSeconds: number = 10.0): Promise<any> {
+    const res = await fetch(`${API_BASE}/manager/tools/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, arguments: args, timeout_seconds: timeoutSeconds }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to test dynamic tool");
+    }
+    return res.json();
+  },
+
+  async getManagerTemplates(): Promise<any[]> {
+    const res = await fetch(`${API_BASE}/manager/templates`);
+    if (!res.ok) return [];
+    return res.json();
+  },
 };
+

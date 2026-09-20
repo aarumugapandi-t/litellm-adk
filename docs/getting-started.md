@@ -1,61 +1,96 @@
 # Getting Started with LiteLLM ADK
 
-Welcome to the **LiteLLM Agent Development Kit (ADK)**. This guide will walk you through setting up your environment, initializing your first agent, and understanding how state management works natively.
+Welcome to the **LiteLLM Agent Development Kit (ADK)**. This guide walks you through setting up your environment, initializing your first agent, and understanding how state and tool execution work natively.
+
+For comprehensive deep dives into every framework component, refer to the [**Documentation Index**](./README.md).
+
+---
 
 ## 1. Prerequisites
 
-The ADK requires Python 3.9+ and assumes you have an API key for your desired Large Language Model provider.
+The ADK requires Python 3.9+ and an API key for your desired Large Language Model provider.
 
 ```bash
 pip install litellm-adk
 ```
 
+---
+
 ## 2. Environment Configuration
 
-Instead of hardcoding API keys and endpoints into your application, the ADK automatically reads from your environment variables. Create a `.env` file in the root of your project. 
-
-If you are using a local proxy or a custom routing layer, you can easily define a `base_url`.
+Instead of hardcoding API keys and endpoints into your application, the ADK automatically reads from your environment variables. Create a `.env` file in the root of your project:
 
 ```env
-# Example .env file
-ADK_MODEL=groq/qwen/qwen3-32b
-ADK_BASE_URL=http://localhost:9000/v1
-ADK_API_KEY=sk-demo-1234abcd5678efgh
+# Provider API Keys
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Optional Proxy / Local Model Base URL
+# LITELLM_API_BASE=http://localhost:9000/v1
+
+# Default Model Selection
+LITELLM_DEFAULT_MODEL=gpt-4o
 ADK_LOG_LEVEL=INFO
 ```
 
+---
+
 ## 3. Your First Agent
 
-The `LiteLLMAgent` class is the core orchestrator. By default, it automatically manages conversational context, so you don't need to manually append user and assistant messages to a list.
+The `Agent` class is the core orchestrator. It automatically manages conversational context, multi-turn reasoning, and tool execution.
 
 ```python
 import asyncio
-from litellm_adk import LiteLLMAgent
+from litellm_adk import Agent, tool
+
+# 1. Define a tool with automatic schema inference
+@tool(description="Calculates simple interest on an investment.")
+def calculate_interest(principal: float, rate_pct: float, time_years: float) -> dict:
+    interest = (principal * rate_pct * time_years) / 100.0
+    return {
+        "principal": principal,
+        "interest": round(interest, 2),
+        "total": round(principal + interest, 2),
+    }
 
 async def main():
-    # You can configure the agent either implicitly via .env or explicitly via parameters
-    agent = LiteLLMAgent(
-        model="groq/qwen/qwen3-32b",
-        api_key="sk-demo-1234abcd5678efgh",
-        base_url="http://localhost:9000/v1",
-        system_prompt="You are a helpful customer support assistant."
+    # 2. Instantiate the agent
+    agent = Agent(
+        name="FinanceAssistant",
+        model="gpt-4o",
+        system_prompt="You are a helpful financial assistant. Use your tools for precise computations.",
+        tools=[calculate_interest],
     )
 
-    # The ainvoke method handles asynchronous communication with the LLM
-    response = await agent.ainvoke("Hi, my name is David and my order number is 9921.")
-    print(response.content)
-
-    # Context is persisted automatically in the default memory backend
-    response = await agent.ainvoke("Can you remind me what my order number is?")
-    print(response.content) # Output: "Your order number is 9921."
+    # 3. Asynchronously invoke the agent
+    response = await agent.ainvoke(
+        "If I invest $5,000 at 6% annual rate for 3 years, what is the interest and total?"
+    )
+    print("Agent Response:\n", response.text)
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## 4. Next Steps
+---
 
-Now that you have a basic agent running, explore the framework's more powerful capabilities:
-- Learn how the ADK routes requests in the Architecture Overview.
-- Dive into multi-agent architectures in Advanced Patterns.
-- Ensure your deployments are secure in Security & Compliance.
+## 4. Visual Workflow Canvas & Prompt-to-Agent Studio
+
+The ADK includes a full visual canvas and autonomous agent synthesizer.
+
+To launch the web studio:
+```bash
+python -m litellm_adk.server
+```
+Visit `http://localhost:8000` to interact with:
+- The **"✨ Prompt to Agent"** modal to synthesize agents and tools from natural language.
+- Drag-and-drop workflow canvas with live WebSocket execution monitoring.
+
+---
+
+## 5. Next Steps
+
+- Explore the complete [Architecture Overview](./01-architecture-overview.md).
+- Learn about the [Agent Framework & Core Reasoning Loop](./03-agent-framework.md).
+- Discover how to build [Dynamic Tools & Safe Sandboxes](./04-tools-and-dynamic-tooling.md).
+- Read the [Workflow Orchestration Engine Guide](./06-workflow-orchestration-engine.md).

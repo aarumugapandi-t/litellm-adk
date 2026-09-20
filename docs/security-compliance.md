@@ -1,56 +1,72 @@
 # Security, Compliance, and Observability
 
-Deploying LLMs into production requires strict adherence to data privacy standards and comprehensive visibility into system performance.
+Deploying LLMs into enterprise production requires strict adherence to data privacy standards, sandbox isolation, and comprehensive visibility.
 
-## 1. PII Sanitization (PIIScrubber)
+For the complete technical guide, see [**11. Middleware, Security & Caching**](./11-middleware-security-caching.md).
 
-The ADK ships with a native `PIIScrubber` interceptor. When enabled, this layer scans all outgoing `messages` arrays, utilizing localized Regex and NLP patterns to mask Personally Identifiable Information (PII) before the payload is ever serialized and transmitted to external APIs.
+---
+
+## 1. PII Sanitization (`PIIScrubber`)
+
+The ADK includes a native `PIIScrubber` interceptor. When enabled via `scrub_pii=True` on `Agent`, this layer scans all outgoing message strings, utilizing compiled regex patterns to mask sensitive data before the payload is transmitted to external providers:
 
 ```python
-from litellm_adk import LiteLLMAgent
+from litellm_adk import Agent
 
-agent = LiteLLMAgent(
-    model="openai/gpt-4o",
-    scrub_pii=True # Activates the sanitization interceptor
+agent = Agent(
+    model="gpt-4o",
+    scrub_pii=True,  # Activates the PII sanitization interceptor
 )
 
 # Outgoing network payload: "User contact is [EMAIL_REDACTED]"
 await agent.ainvoke("User contact is david@enterprise.com")
 ```
 
-Currently, the `PIIScrubber` natively intercepts:
-- Emails
-- Social Security Numbers (SSN)
-- Credit Card Numbers
-- Standardized Phone Numbers
+The `PIIScrubber` natively redacts:
+- Email Addresses (`[EMAIL_REDACTED]`)
+- Social Security Numbers (`[SSN_REDACTED]`)
+- Credit Card Numbers (`[CREDIT_CARD_REDACTED]`)
+- API Keys (`[API_KEY_REDACTED]`)
+- Bearer Tokens (`[BEARER_TOKEN_REDACTED]`)
 
-## 2. API Telemetry & Tracing
+---
 
-Visibility into token economics and latency spans is critical. Instead of requiring massive refactors, the ADK exposes a zero-configuration hook that binds directly to the OpenTelemetry (OTel) standard.
+## 2. Dynamic Tool AST Sandboxing (`ASTSecurityValidator`)
+
+All dynamic Python code synthesized at runtime is subjected to static Abstract Syntax Tree (AST) analysis before execution. Any attempts to import restricted operating system modules (`os`, `sys`, `subprocess`, `socket`) or invoke dangerous functions (`eval`, `exec`, `__import__`) raise `ToolPermissionError` and halt execution.
+
+See [**Tools & Dynamic Tooling**](./04-tools-and-dynamic-tooling.md) for sandbox implementation details.
+
+---
+
+## 3. API Telemetry & Tracing
+
+The ADK exposes OpenTelemetry (OTel) bindings for tracking token economics, latencies, and execution spans:
 
 ```python
 from litellm_adk import setup_litellm_telemetry
 
-# Execute this once during application startup
+# Initialize during application startup
 setup_litellm_telemetry()
 ```
 
-When integrated with an observability platform like **Langfuse**, **DataDog**, or **New Relic**, this hook automatically maps:
-- End-to-end execution latency
-- Input/Output token counts
-- Prompt and Completion strings
-- Execution errors and failover cascade logs
+When integrated with observability platforms (e.g. Langfuse, Datadog, Prometheus), the ADK tracks:
+- End-to-end execution latency per node and agent turn.
+- Input and output token usage.
+- Tool call duration and argument logs.
+- Failover cascade history.
 
-## 3. Automatic Failover Resiliency
+---
 
-Model providers frequently experience degraded performance or strict rate limits. The ADK ensures high availability through automated, graceful degradation.
+## 4. Model Failover & Resiliency
 
-You can configure fallbacks dynamically:
+Configure fallback models to prevent outages caused by provider rate limits:
+
 ```python
-agent = LiteLLMAgent(
-    model="anthropic/claude-3-opus",
-    fallbacks=["groq/llama3-70b", "openai/gpt-3.5-turbo"]
+agent = Agent(
+    model="claude-3-5-sonnet",
+    fallbacks=["gpt-4o", "groq/llama3-70b"],
 )
 ```
 
-If the primary model returns a `429 Rate Limit` or a `503 Service Unavailable`, the ADK intercepts the exception natively within the `_get_completion` router and automatically retries the identical payload against the fallbacks sequentially until a successful response is generated.
+If the primary provider returns `429 Rate Limit` or `503 Service Unavailable`, the router retries against the specified fallback models sequentially.

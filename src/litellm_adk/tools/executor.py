@@ -141,3 +141,17 @@ class ToolExecutor:
                     "content": err_msg,
                 }
             raise ToolError(err_msg, tool_name=tool_name, tool_call_id=tool_call_id) from e
+
+    async def execute(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        tool_call_id: str = "call_1",
+    ) -> Any:
+        """Convenience method to execute a tool by name and return its direct content string."""
+        res = await self.execute_tool_call(
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            arguments=arguments,
+        )
+        return res.get("content")

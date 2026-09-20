@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from .routes import workflows, executions, stream, metadata
+from .routes import workflows, executions, stream, metadata, manager
 from ..persistence.sqlite_workflow import workflow_store
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -43,6 +43,8 @@ def create_app() -> FastAPI:
     app.include_router(executions.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
     app.include_router(metadata.router, prefix="/api/v1")
+    app.include_router(manager.router, prefix="/api/v1")
+
 
 
     # Mount static assets if directory exists
