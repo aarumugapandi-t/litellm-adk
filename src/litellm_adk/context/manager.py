@@ -307,23 +307,32 @@ class ContextManager:
             extra_sections.append(f"### Output Format Requirement:\n{OutputParser.get_schema_instruction(response_model)}")
         if working_memory_notes:
             extra_sections.append("### Working Memory / Current Plan:\n" + "\n".join(f"- {n}" for n in working_memory_notes))
+        # Check placement strategy for cognitive memory
+        mem_placement = getattr(self.policy, "memory_placement", "system_prompt")
+        user_turn_blocks = []
+
         if long_term_memories:
-            extra_sections.append("### Long-Term Memory / Known Facts:\n" + "\n".join(f"- {m}" for m in long_term_memories))
+            if mem_placement == "system_prompt":
+                extra_sections.append("### Long-Term Memory / Known Facts:\n" + "\n".join(f"- {m}" for m in long_term_memories))
+            else:
+                user_turn_blocks.append("<user_memory>\n" + "\n".join(f"- {m}" for m in long_term_memories) + "\n</user_memory>")
 
         # Check placement strategy for ephemeral RAG context
         placement = getattr(self.policy, "context_placement", "user_turn")
-        augmented_prompt = current_prompt
 
         if retrieved_documents:
             if placement == "system_prompt":
                 extra_sections.append("### Retrieved Reference Context:\n" + "\n\n".join(retrieved_documents))
             else:
-                # Default: Ephemeral User Turn Context
-                context_block = "<context>\n" + "\n\n".join(retrieved_documents) + "\n</context>"
-                if current_prompt:
-                    augmented_prompt = f"{context_block}\n\n{current_prompt}"
-                else:
-                    augmented_prompt = context_block
+                user_turn_blocks.append("<context>\n" + "\n\n".join(retrieved_documents) + "\n</context>")
+
+        augmented_prompt = current_prompt
+        if user_turn_blocks:
+            user_context_block = "\n\n".join(user_turn_blocks)
+            if current_prompt:
+                augmented_prompt = f"{user_context_block}\n\n{current_prompt}"
+            else:
+                augmented_prompt = user_context_block
 
         if extra_sections:
             resolved_system = f"{resolved_system}\n\n" + "\n\n".join(extra_sections)
@@ -333,7 +342,15 @@ class ContextManager:
         # 3. Add conversation history
         messages.extend([dict(m) for m in conversation_history])
 
-        # 4. Add current prompt if provided and not already in conversation history
+        # 4. Attach user context block directly to trailing user turn in conversation_history if current_prompt was not passed
+        if user_turn_blocks and not current_prompt and messages and messages[-1].get("role") == "user":
+            user_context_block = "\n\n".join(user_turn_blocks)
+            last_content = messages[-1].get("content", "")
+            if isinstance(last_content, str) and not last_content.startswith(user_context_block):
+                messages[-1]["content"] = f"{user_context_block}\n\n{last_content}"
+                augmented_prompt = None
+
+        # 5. Add current prompt if provided and not already in conversation history
         if augmented_prompt:
             if not (conversation_history and conversation_history[-1].get("role") == "user" and conversation_history[-1].get("content") in (current_prompt, augmented_prompt)):
                 messages.append({"role": "user", "content": augmented_prompt})

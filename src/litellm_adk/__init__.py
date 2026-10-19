@@ -136,7 +136,7 @@ from .persistence import (
     RunStore,
     SessionStore,
 )
-from .session import Session
+from .session import Session, current_user_id, current_session_id
 
 # Observability & Config
 from .config import create_litellm_router, load_litellm_config, settings
@@ -290,6 +290,8 @@ __all__ = [
     "Supervisor",
     # Sessions & Persistence
     "Session",
+    "current_user_id",
+    "current_session_id",
     "SessionStore",
     "RunStore",
     "InMemorySessionStore",

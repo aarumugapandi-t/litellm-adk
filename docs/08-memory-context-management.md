@@ -4,23 +4,26 @@ The LiteLLM ADK provides a multi-layer memory architecture (`src/litellm_adk/mem
 
 ---
 
-## 1. Multi-Layer Memory Architecture
+## 1. Cognitive Memory Architecture
 
 ```mermaid
 graph TD
     UserTurn["User Turn Input"] --> Agent["Agent Orchestrator"]
     
-    subgraph "Multi-Layer Memory Hierarchy"
-        Agent <--> WorkingMem["1. Working Memory\n(Scratchpad for active reasoning turn)"]
-        Agent <--> ConvoMem["2. Conversation Memory\n(Multi-turn dialog history)"]
-        Agent <--> LongTermMem["3. Long-Term Memory\n(Persistent key-value / document store)"]
-        Agent <--> VectorMem["4. Vector Store (RAG)\n(Semantic similarity lookup)"]
+    subgraph "Cognitive Memory Hierarchy"
+        Agent <--> Scratchpad["1. Native Message Scratchpad\n(Tool calls & observations in active turn thread)"]
+        Agent <--> ConvoMem["2. Conversation Memory\n(Session-isolated multi-turn dialog history)"]
+        Agent <--> LongTermMem["3. Long-Term Memory\n(Dual-Tier: Deterministic Profile + Episodic Vector)"]
+        Agent <--> VectorMem["4. Vector Store (RAG)\n(Semantic similarity lookup across domain documents)"]
     end
     
     subgraph "Storage Adapters"
-        LongTermMem --> SQLite["SQLAlchemy (SQLite, Postgres, MySQL)"]
-        LongTermMem --> Mongo["MongoDB Backend"]
-        LongTermMem --> Files["FileMemory (JSON / YAML)"]
+        ConvoMem --> SQLite["SQLAlchemy (SQLite, Postgres, MySQL)"]
+        ConvoMem --> Mongo["MongoDB Backend"]
+        ConvoMem --> InMem["In-Memory Store"]
+        LongTermMem --> SQLite
+        LongTermMem --> Mongo
+        LongTermMem --> InMem
     end
 ```
 
@@ -63,7 +66,55 @@ memory = MongoDBMemory(
 
 ---
 
-## 3. Context Management & Window Compaction (`ContextManager`)
+## 3. Dual-Tier Long-Term Cognitive Memory (`LongTermMemory`)
+
+`LongTermMemory` persists user facts, preferences, and historical interactions across independent sessions. It decouples memory into two specialized tiers:
+
+### Tier 1: Deterministic User Profile Store
+Multi-tenant key-value attributes (user persona, formatting requirements, constraints) strictly partitioned by `user_id`. When an agent turn begins with `user_id`, these profile attributes are **unconditionally loaded** into system instructions, guaranteeing 100% adherence to user preferences without relying on probabilistic semantic retrieval.
+
+```python
+from litellm_adk.memory import LongTermMemory
+
+memory = LongTermMemory()
+
+# Store deterministic persona attributes for user_123
+await memory.add_profile_attribute(
+    user_id="user_123",
+    key="response_format",
+    value="Always respond in concise markdown tables with code blocks in Python.",
+)
+
+profile = await memory.get_profile("user_123")
+```
+
+### Tier 2: Episodic Semantic Vector Store
+Unstructured conversational memory, historical decisions, and notes embedded into a `VectorStore`. The agent automatically queries this store using the user's incoming message, injecting only the top-k most relevant historical context chunks.
+
+```python
+from litellm_adk.memory import LongTermMemory
+from litellm_adk.vector import InMemoryVectorStore
+
+vector_store = InMemoryVectorStore()
+memory = LongTermMemory(episodic_store=vector_store)
+
+# Store episodic memory chunks tagged by user_id
+await memory.add_episodic_memory(
+    user_id="user_123",
+    content="User migrated production databases from MongoDB to PostgreSQL on AWS RDS in Q3.",
+)
+
+# Semantic retrieval filtered by user_id
+relevant_notes = await memory.search_episodic_memory(
+    user_id="user_123",
+    query="What database technology does the user deploy in production?",
+    limit=3,
+)
+```
+
+---
+
+## 4. Context Management & Window Compaction (`ContextManager`)
 
 When conversation history grows, naive message appending causes context overflows and inflated latency. The `ContextManager` applies dynamic compaction policies:
 
@@ -93,7 +144,7 @@ agent = Agent(
 
 ---
 
-## 4. Vector Store & RAG Retrieval (`VectorStore`)
+## 5. Vector Store & RAG Retrieval (`VectorStore`)
 
 Connect vector stores directly to agents for semantic document retrieval:
 

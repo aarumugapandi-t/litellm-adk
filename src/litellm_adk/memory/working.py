@@ -1,11 +1,16 @@
-"""Working memory representing temporary state during an agent run."""
+"""Working memory (Deprecated).
+
+WorkingMemory has been deprecated and decoupled from AgentLoop in favor of the native
+LLM message scratchpad ([user, assistant (tool_calls), tool (result), assistant]).
+This class is retained purely for backward-compatibility with external callers.
+"""
 
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
 class WorkingMemory(BaseModel):
-    """Temporary scratchpad for an ongoing agent execution turn/session."""
+    """(Deprecated) Legacy scratchpad for ongoing agent execution turns."""
 
     current_task: Optional[str] = None
     plan: List[str] = Field(default_factory=list)
@@ -23,8 +28,13 @@ class WorkingMemory(BaseModel):
     def add_observation(self, observation: str) -> None:
         self.observations.append(observation)
 
-    def record_tool_result(self, tool_name: str, result: Any) -> None:
-        self.tool_results[tool_name] = result
+    def record_tool_result(self, tool_name: str, result_or_args: Any, result: Optional[Any] = None) -> None:
+        if result is not None:
+            self.tool_results[tool_name] = {"arguments": result_or_args, "result": result}
+            self.add_observation(f"Tool '{tool_name}' result: {result}")
+        else:
+            self.tool_results[tool_name] = result_or_args
+            self.add_observation(f"Tool '{tool_name}' result: {result_or_args}")
 
     def set_variable(self, key: str, value: Any) -> None:
         self.variables[key] = value

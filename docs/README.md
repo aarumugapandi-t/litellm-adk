@@ -50,4 +50,4 @@ graph TD
 2. **Autonomous Prompt-to-Agent Creation**: Transform plain English instructions into typed agents with custom Python tools and visual canvas wiring.
 3. **AST-Validated Dynamic Tooling**: Synthesize and execute dynamic Python tools safely in an isolated AST-verified runtime.
 4. **Resilient Graph Execution**: Non-blocking DAG execution with full pause/resume capabilities for human approvals.
-5. **Multi-Turn Memory & RAG**: Pluggable storage with working memory, conversation history, and vector retrieval.
+5. **Cognitive Memory & RAG**: Dual-tier long-term memory (deterministic user profile + episodic vector store), session-isolated conversation history, and semantic retrieval.

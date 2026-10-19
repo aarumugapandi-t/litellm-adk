@@ -61,6 +61,10 @@ class ToolRegistry:
         """Retrieves a registered Tool instance by name."""
         return self._tools.get(name)
 
+    def list_tools(self) -> List[Tool]:
+        """Returns a list of all registered Tool instances."""
+        return list(self._tools.values())
+
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Returns OpenAPI schema definitions for all registered tools."""
         return [t.definition for t in self._tools.values()]

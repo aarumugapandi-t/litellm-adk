@@ -24,10 +24,9 @@ graph TD
     Loop --> HITL["Human-in-the-Loop"]
     Loop --> EventBus["Event Bus & Streaming"]
     Loop --> Middleware["Middleware Pipeline"]
-    ContextMgr --> Memory["Multi-Layer Memory"]
-    Memory --> WorkingMem["Working Memory (Run State)"]
+    ContextMgr --> Memory["Cognitive Memory System"]
     Memory --> ConvMem["Conversation Memory (Turns)"]
-    Memory --> LongTermMem["Long-Term Memory (Facts)"]
+    Memory --> LongTermMem["Long-Term Memory (Profile & Episodic)"]
     ContextMgr --> RAG["Retriever & Vector Store"]
 ```
 
@@ -112,22 +111,46 @@ agent = Agent(
 )
 ```
 
-### 3. Multi-Layer Memory Architecture
-Separate execution state across three distinct layers:
-- **Working Memory**: Temporary scratchpad (current task, plan, and intermediate variables) for the ongoing turn.
-- **Conversation Memory**: Conversational turn history (user, assistant, tool calls).
-- **Long-Term Memory**: Persistent facts, preferences, and knowledge surviving across sessions.
+### 3. Cognitive Memory Architecture
+Execution state and context are structured across specialized, production-ready memory layers:
+- **Native Turn Scratchpad**: The agent loop tracks multi-step reasoning, tool invocations, and tool outputs directly within the native message thread (`user`, `assistant`, `tool`), avoiding redundant string concatenation and context token inflation.
+- **Conversation Memory**: Multi-turn dialogue history with session-level isolation, supported by pluggable backends (In-Memory, SQLAlchemy, MongoDB) and dynamic context compaction (sliding window, summarization, semantic truncation).
+- **Long-Term Cognitive Memory**: Dual-tier persistence across sessions:
+  - **Deterministic User Profile**: Multi-tenant persona, preferences, and operational constraints strictly partitioned by `user_id` and unconditionally loaded into context.
+  - **Episodic Semantic Store**: Vector-embedded historical interactions and knowledge chunks, dynamically retrieved via semantic similarity search.
 
 ```python
-from litellm_adk import Agent, LongTermMemory
+from litellm_adk import Agent, LongTermMemory, InMemoryVectorStore
 
-memory = LongTermMemory()
-await memory.add_fact("user_style", "Prefers concise, point-form answers.")
+# 1. Initialize Long-Term Cognitive Memory with vector-backed episodic store
+episodic_store = InMemoryVectorStore()
+memory = LongTermMemory(episodic_store=episodic_store)
 
+# Store deterministic profile constraints for a specific user
+await memory.add_profile_attribute(
+    user_id="user_123",
+    key="coding_style",
+    value="Strict Python type annotations with NumPy docstrings.",
+)
+
+# Store episodic memory chunks indexed via semantic vector search
+await memory.add_episodic_memory(
+    user_id="user_123",
+    content="User prefers PostgreSQL over MongoDB for transactional database workloads.",
+)
+
+# 2. Attach to Agent; user context is automatically injected per turn
 agent = Agent(
     model="openai/gpt-4o",
-    system_prompt="You are an assistant.",
+    system_prompt="You are an expert software architect.",
+    long_term_memory=memory,
 )
+
+result = await agent.run(
+    "How should we architect our primary database?",
+    user_id="user_123",
+)
+print(result.text)
 ```
 
 ### 4. Vector Store & RAG
@@ -214,7 +237,7 @@ src/litellm_adk/
 ├── agent/            # Agent orchestrator, loop, config, state, result, output parser
 ├── models/           # LiteLLM gateway, Model protocol, ModelConfig
 ├── tools/            # First-class Tool abstraction, registry, executor, permissions
-├── memory/           # Working, Conversation, Long-term memory, MemoryPolicy
+├── memory/           # Conversation, Long-term cognitive memory (Profile + Episodic), MemoryPolicy
 ├── vector/           # VectorStore, Embedder, Retriever (RAG)
 ├── context/          # ContextManager, token budgeting, ContextPolicy
 ├── human/            # ConsoleHumanLoop, CallbackHumanLoop, ApprovalManager

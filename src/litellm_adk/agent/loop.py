@@ -70,13 +70,13 @@ class AgentLoop:
         conversation_history: List[Dict[str, Any]],
         images: Optional[List[str]] = None,
         developer_prompt: Optional[str] = None,
-        working_memory_notes: Optional[List[str]] = None,
         long_term_memories: Optional[List[str]] = None,
         retrieved_documents: Optional[List[str]] = None,
         response_model: Optional[Type[BaseModel]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         agent_name: str = "Agent",
         stream: bool = False,
+        **kwargs: Any,
     ) -> AgentResult:
         """Executes the loop synchronously until completion or terminal condition."""
         run_id = str(uuid.uuid4())
@@ -159,7 +159,6 @@ class AgentLoop:
                     system_prompt=system_prompt,
                     conversation_history=local_messages,
                     developer_prompt=developer_prompt,
-                    working_memory_notes=working_memory_notes,
                     long_term_memories=long_term_memories,
                     retrieved_documents=retrieved_documents,
                     response_model=response_model,
@@ -459,6 +458,7 @@ class AgentLoop:
                     # Append tool result messages to conversation
                     local_messages.extend(tool_messages)
                     state.tool_call_count += len(tool_messages)
+
                     is_resuming = False
                     continue
 
@@ -529,12 +529,12 @@ class AgentLoop:
         conversation_history: List[Dict[str, Any]],
         images: Optional[List[str]] = None,
         developer_prompt: Optional[str] = None,
-        working_memory_notes: Optional[List[str]] = None,
         long_term_memories: Optional[List[str]] = None,
         retrieved_documents: Optional[List[str]] = None,
         response_model: Optional[Type[BaseModel]] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         agent_name: str = "Agent",
+        **kwargs: Any,
     ) -> AsyncIterator[Event]:
         """Runs the agent and yields live events as they occur."""
         q = self.event_bus.create_stream_queue()
@@ -548,7 +548,6 @@ class AgentLoop:
                 conversation_history=conversation_history,
                 images=images,
                 developer_prompt=developer_prompt,
-                working_memory_notes=working_memory_notes,
                 long_term_memories=long_term_memories,
                 retrieved_documents=retrieved_documents,
                 response_model=response_model,

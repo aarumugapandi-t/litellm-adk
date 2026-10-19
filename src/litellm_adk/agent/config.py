@@ -79,6 +79,10 @@ class AgentConfig(BaseModel):
     # Retrieval and execution flags
     vector_search_threshold: Optional[float] = Field(default=None, description="Minimum similarity threshold for vector retrieval.")
     retrieval_config: Optional[Any] = Field(default=None, description="Configuration model for vector retrieval.")
+    retrieval_mode: str = Field(default="tool", description="Retrieval modality ('tool', 'pipeline', or 'both').")
+    retrieval_strategy: Optional[str] = Field(default=None, description="Retrieval strategy ('direct', 'conditional_transform', 'multi_query', 'adaptive_router').")
+    retrieval_tool_name: str = Field(default="search_knowledge_base", description="Name of the mounted retrieval tool.")
+    retrieval_tool_description: Optional[str] = Field(default=None, description="Custom description for the retrieval tool.")
     parallel_tool_calls: Optional[bool] = Field(default=None, description="Execute parallel tool calls concurrently.")
 
     # Dynamic extra kwargs

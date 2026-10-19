@@ -57,3 +57,4 @@ class ContextPolicy(BaseModel):
     preserve_last_n_messages: int = Field(default=4, description="Number of recent messages to always preserve.")
     summarize_model: Optional[str] = Field(default=None, description="Model to use for summarization compaction.")
     context_placement: str = Field(default="user_turn", description="Where to inject ephemeral RAG context: 'user_turn' or 'system_prompt'.")
+    memory_placement: str = Field(default="system_prompt", description="Where to inject long-term cognitive memory: 'system_prompt' or 'user_turn'.")

@@ -95,9 +95,8 @@ Agent
 ├── Prompt / Context
 │
 ├── Memory
-│   ├── Working Memory
 │   ├── Conversation Memory
-│   └── Long-Term Memory
+│   └── Long-Term Cognitive Memory (Profile & Episodic)
 │
 ├── Vector Store
 │   ├── Embedding
@@ -342,27 +341,15 @@ Do not hard-code a UI.
 
 # 10. Memory Architecture
 
-Memory must be treated as multiple layers.
+Memory is decoupled into specialized layers:
 
-Implement:
+## Native Message Scratchpad
 
-## Working Memory
-
-Temporary state for the current execution.
-
-Example:
-
-```text
-current task
-current plan
-tool results
-temporary variables
-current observations
-```
+Active execution state, tool invocations, and tool results are tracked directly within the native message thread (`user`, `assistant` with `tool_calls`, `tool` outputs). This eliminates duplicate prompt string concatenation and context token bloat during the reasoning loop.
 
 ## Conversation Memory
 
-Messages from the current and previous conversations.
+Messages from the current and previous conversations across turns.
 
 Support:
 
@@ -376,15 +363,18 @@ developer
 
 ## Long-Term Memory
 
-Information that should survive across sessions.
+Information that should survive across sessions. Decoupled into two tiers:
+
+1. **Deterministic User Profile**: Structured key-value persona, constraints, and formatting preferences partitioned strictly by `user_id` and unconditionally loaded into context.
+2. **Episodic Semantic Store**: Vector-embedded historical interactions and decisions dynamically retrieved via similarity search.
 
 Examples:
 
 ```text
-user preferences
-facts
-past decisions
-important events
+user preferences & persona
+formatting constraints
+past decisions & milestones
+episodic knowledge
 learned information
 ```
 
@@ -533,9 +523,7 @@ Developer instructions
 +
 Conversation history
 +
-Working memory
-+
-Long-term memory
+Long-term memory (Profile & Episodic)
 +
 Retrieved documents
 +

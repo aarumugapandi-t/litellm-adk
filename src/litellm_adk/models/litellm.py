@@ -258,52 +258,74 @@ class LiteLLMModel:
         """Executes asynchronous LLM completion call via LiteLLM or LiteLLM Router."""
         call_kwargs = self._build_completion_kwargs(messages, tools=tools, stream=False, **kwargs)
 
-        try:
-            from unittest.mock import Mock
-            # Route through Router if configured
-            if self.router is not None:
-                if isinstance(getattr(self.router, "completion", None), Mock) and not isinstance(getattr(self.router, "acompletion", None), Mock):
-                    raw_response = self.router.completion(**call_kwargs)
+        max_rate_limit_retries = 3
+        for attempt in range(max_rate_limit_retries):
+            try:
+                from unittest.mock import Mock
+                # Route through Router if configured
+                if self.router is not None:
+                    if isinstance(getattr(self.router, "completion", None), Mock) and not isinstance(getattr(self.router, "acompletion", None), Mock):
+                        raw_response = self.router.completion(**call_kwargs)
+                    else:
+                        raw_response = await self.router.acompletion(**call_kwargs)
+                elif isinstance(getattr(litellm, "completion", None), Mock) and not isinstance(getattr(litellm, "acompletion", None), Mock):
+                    raw_response = litellm.completion(**call_kwargs)
                 else:
-                    raw_response = await self.router.acompletion(**call_kwargs)
-            elif isinstance(getattr(litellm, "completion", None), Mock) and not isinstance(getattr(litellm, "acompletion", None), Mock):
-                raw_response = litellm.completion(**call_kwargs)
-            else:
-                raw_response = await litellm.acompletion(**call_kwargs)
-            return self._parse_response(raw_response)
-        except Exception as e:
-            # Active ADK-level fallback execution
-            if self.config.fallbacks:
-                adk_logger.warning(
-                    f"Primary model '{self.config.model}' invocation failed ({e}). "
-                    f"Attempting ADK fallback models..."
+                    raw_response = await litellm.acompletion(**call_kwargs)
+                return self._parse_response(raw_response)
+            except Exception as e:
+                err_str = str(e).lower()
+                is_rate_limit = (
+                    "ratelimit" in err_str
+                    or "rate_limit" in err_str
+                    or "429" in err_str
+                    or "quota exceeded" in err_str
+                    or "resource_exhausted" in err_str
                 )
-                last_err = e
-                for fallback in self.config.fallbacks:
-                    fb_name = fallback.get("model") if isinstance(fallback, dict) else str(fallback)
-                    try:
-                        adk_logger.info(f"Invoking fallback model '{fb_name}'...")
-                        fb_kwargs = self._build_fallback_kwargs(call_kwargs, fallback)
-                        raw_response = await litellm.acompletion(**fb_kwargs)
-                        adk_logger.info(f"Fallback model '{fb_name}' succeeded.")
-                        return self._parse_response(raw_response)
-                    except Exception as fb_err:
-                        adk_logger.warning(f"Fallback model '{fb_name}' failed: {fb_err}")
-                        last_err = fb_err
-                        continue
-                adk_logger.error(f"Primary model and all configured fallbacks failed. Last error: {last_err}")
+                if is_rate_limit and attempt < max_rate_limit_retries - 1:
+                    import re
+                    match = re.search(r"retry in ([\d\.]+)s", str(e), re.IGNORECASE)
+                    delay = float(match.group(1)) + 1.0 if match else 5.0 * (2 ** attempt)
+                    delay = min(delay, 60.0)
+                    adk_logger.warning(
+                        f"Rate limit / quota exceeded on model '{self.config.model}'. "
+                        f"Retrying in {delay:.1f}s (attempt {attempt + 1}/{max_rate_limit_retries})..."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                # Active ADK-level fallback execution
+                if self.config.fallbacks:
+                    adk_logger.warning(
+                        f"Primary model '{self.config.model}' invocation failed ({e}). "
+                        f"Attempting ADK fallback models..."
+                    )
+                    last_err = e
+                    for fallback in self.config.fallbacks:
+                        fb_name = fallback.get("model") if isinstance(fallback, dict) else str(fallback)
+                        try:
+                            adk_logger.info(f"Invoking fallback model '{fb_name}'...")
+                            fb_kwargs = self._build_fallback_kwargs(call_kwargs, fallback)
+                            raw_response = await litellm.acompletion(**fb_kwargs)
+                            adk_logger.info(f"Fallback model '{fb_name}' succeeded.")
+                            return self._parse_response(raw_response)
+                        except Exception as fb_err:
+                            adk_logger.warning(f"Fallback model '{fb_name}' failed: {fb_err}")
+                            last_err = fb_err
+                            continue
+                    adk_logger.error(f"Primary model and all configured fallbacks failed. Last error: {last_err}")
+                    raise ModelError(
+                        message=f"Primary model '{self.config.model}' and all fallbacks failed: {last_err}",
+                        model=self.config.model,
+                        details={"call_kwargs": {k: v for k, v in call_kwargs.items() if k != "messages"}},
+                    ) from last_err
+
+                adk_logger.error(f"LiteLLM completion error on model '{self.config.model}': {e}")
                 raise ModelError(
-                    message=f"Primary model '{self.config.model}' and all fallbacks failed: {last_err}",
+                    message=str(e),
                     model=self.config.model,
                     details={"call_kwargs": {k: v for k, v in call_kwargs.items() if k != "messages"}},
-                ) from last_err
-
-            adk_logger.error(f"LiteLLM completion error on model '{self.config.model}': {e}")
-            raise ModelError(
-                message=str(e),
-                model=self.config.model,
-                details={"call_kwargs": {k: v for k, v in call_kwargs.items() if k != "messages"}},
-            ) from e
+                ) from e
 
     def generate_sync(
         self,

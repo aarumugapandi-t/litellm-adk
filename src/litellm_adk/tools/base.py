@@ -121,6 +121,13 @@ class Tool:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self.func(*args, **kwargs)
 
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        """Executes the tool with arguments."""
+        if self.is_async:
+            return await self.func(*args, **kwargs)
+        else:
+            return self.func(*args, **kwargs)
+
     def to_dict(self) -> Dict[str, Any]:
         """Returns a JSON-serializable dictionary representation of the Tool."""
         return {

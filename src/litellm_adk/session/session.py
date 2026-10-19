@@ -1,7 +1,12 @@
+from contextvars import ContextVar
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 import uuid
 import time
+
+current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
+current_session_id: ContextVar[Optional[str]] = ContextVar("current_session_id", default=None)
+
 
 class Session(BaseModel):
     """

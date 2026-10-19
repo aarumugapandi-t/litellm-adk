@@ -126,6 +126,10 @@ class Agent:
         cache_params: Optional[Dict[str, Any]] = None,
         max_budget: Optional[float] = None,
         mcp_servers: Optional[List[Union[str, Dict[str, Any], Any]]] = None,
+        retrieval_mode: Optional[str] = None,
+        retrieval_strategy: Optional[str] = None,
+        retrieval_tool_name: Optional[str] = None,
+        retrieval_tool_description: Optional[str] = None,
         parallel_tool_calls: Optional[bool] = None,
         **kwargs: Any,
     ):
@@ -158,6 +162,14 @@ class Agent:
                 retrieval_config = getattr(config, "retrieval_config", None)
             if parallel_tool_calls is None:
                 parallel_tool_calls = getattr(config, "parallel_tool_calls", None)
+            if retrieval_mode is None:
+                retrieval_mode = getattr(config, "retrieval_mode", None)
+            if retrieval_strategy is None:
+                retrieval_strategy = getattr(config, "retrieval_strategy", None)
+            if retrieval_tool_name is None:
+                retrieval_tool_name = getattr(config, "retrieval_tool_name", None)
+            if retrieval_tool_description is None:
+                retrieval_tool_description = getattr(config, "retrieval_tool_description", None)
             kwargs.update(config.extra_kwargs)
 
         if kwargs:
@@ -213,7 +225,6 @@ class Agent:
 
         # 3. Memory systems
         self.conversation_memory = ConversationMemory(backend=memory or InMemoryMemory())
-        self.working_memory = working_memory or WorkingMemory()
         self.long_term_memory = long_term_memory or LongTermMemory()
 
         # 4. Context management
@@ -242,8 +253,14 @@ class Agent:
 
         # 6. Vector store & Retrieval
         self.vector_store = vector_store
+        self.retrieval_mode = (retrieval_mode or "tool").lower()
+        self.retrieval_tool_name = retrieval_tool_name or "search_knowledge_base"
+        self.retrieval_tool_description = retrieval_tool_description
+
         if retriever:
             self.retriever = retriever
+            if retrieval_strategy and hasattr(self.retriever, "config"):
+                self.retriever.config.strategy = retrieval_strategy
         elif vector_store:
             embedder = None
             if hasattr(vector_store, "embed") and hasattr(vector_store, "embed_batch"):
@@ -251,13 +268,31 @@ class Agent:
             elif hasattr(vector_store, "embedder"):
                 embedder = getattr(vector_store, "embedder")
 
-            r_config = retrieval_config
-            if r_config is None and vector_search_threshold is not None:
-                r_config = RetrievalConfig(similarity_threshold=vector_search_threshold)
+            r_config = retrieval_config or RetrievalConfig()
+            if vector_search_threshold is not None:
+                r_config.similarity_threshold = vector_search_threshold
+            if retrieval_strategy is not None:
+                r_config.strategy = retrieval_strategy
 
-            self.retriever = Retriever(vector_store=vector_store, embedder=embedder, config=r_config)
+            self.retriever = Retriever(
+                vector_store=vector_store,
+                embedder=embedder,
+                config=r_config,
+                strategy=retrieval_strategy,
+                mode=self.retrieval_mode,
+            )
         else:
             self.retriever = None
+
+        # Auto-mount retrieval tool if mode is 'tool' or 'both'
+        if self.retriever and self.retrieval_mode in ("tool", "both"):
+            tool_name = self.retrieval_tool_name or "search_knowledge_base"
+            if self.tool_registry.get_tool(tool_name) is None:
+                r_tool = self.retriever.to_tool(
+                    name=tool_name,
+                    description=self.retrieval_tool_description,
+                )
+                self.tool_registry.register_tool(r_tool)
 
         # 7. Human in the loop
         if human_in_the_loop:
@@ -473,6 +508,14 @@ class Agent:
         return self.tool_registry.get_tool_definitions()
 
     @property
+    def working_memory(self) -> Any:
+        """Deprecated compatibility property. WorkingMemory is replaced by the native message execution scratchpad."""
+        from ..memory.working import WorkingMemory
+        if not hasattr(self, "_deprecated_working_memory"):
+            self._deprecated_working_memory = WorkingMemory()
+        return self._deprecated_working_memory
+
+    @property
     def model_name(self) -> str:
         return self.model.model_name
 
@@ -591,6 +634,7 @@ class Agent:
         prompt: Union[str, List[Dict[str, Any]]],
         session: Optional[Union[str, Session]] = None,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         response_model: Optional[Type[BaseModel]] = None,
         images: Optional[List[str]] = None,
         tools: Optional[List[Any]] = None,
@@ -599,67 +643,88 @@ class Agent:
         """Asynchronously executes the agent reasoning loop to completion."""
         target_session = session or session_id or kwargs.pop("session_id", None)
         actual_session_id = target_session.id if isinstance(target_session, Session) else (target_session or str(uuid.uuid4()))
-
-        # Ensure configured MCP servers are dynamically initialized before reasoning loop
-        if self.mcp_servers and not self._mcp_initialized:
-            await self.initialize_mcp_servers()
-
-        # Optimize/process images if present
-        processed_images = None
-        if images:
-            processed_images = await self._process_images_async(images)
-
-        # Retrieve RAG context if retriever configured
-        retrieved_docs = None
-        if self.retriever and isinstance(prompt, str):
-            retrieved_docs = await self.retriever.retrieve_context(prompt)
-            if retrieved_docs:
-                self.working_memory.set_retrieved_documents(retrieved_docs)
-
-        # Retrieve long-term memories
-        mem_query = prompt if isinstance(prompt, str) else str(prompt)
-        memories = await self.long_term_memory.retrieve_relevant_facts(mem_query)
-
-        # Get existing conversation turns
-        history = await self.conversation_memory.get_messages(actual_session_id)
-
-        # Collect tools
-        tool_defs = self._resolve_runtime_tools(tools) if tools else (self.tools or None)
-        resp_model = response_model or self.response_model
-
-        result = await self.loop.run(
-            prompt=prompt,
-            session_id=actual_session_id,
-            system_prompt=self.system_prompt,
-            conversation_history=history,
-            images=processed_images,
-            developer_prompt=self.developer_prompt,
-            working_memory_notes=self.working_memory.get_summary_notes(),
-            long_term_memories=memories,
-            retrieved_documents=retrieved_docs,
-            response_model=resp_model,
-            tools=tool_defs,
-            agent_name=self.name,
+        
+        from ..session.session import current_user_id, current_session_id
+        resolved_user_id = user_id or kwargs.pop("user_id", None)
+        actual_user_id = (
+            target_session.user_id
+            if isinstance(target_session, Session) and target_session.user_id
+            else (resolved_user_id or current_user_id.get())
         )
 
-        # Prune working memory (clearing ephemeral RAG chunks and scratchpad state)
-        self.working_memory.clear()
+        user_token = current_user_id.set(actual_user_id)
+        session_token = current_session_id.set(actual_session_id)
 
-        # Sync back updated messages to conversation memory
-        await self.conversation_memory.backend.clear(actual_session_id)
-        await self.conversation_memory.backend.add_messages(actual_session_id, history)
+        try:
+            # Reset turn-level chunk deduplication on retrieval tools
+            for tool_obj in self.tool_registry.list_tools():
+                if hasattr(tool_obj, "reset_cache"):
+                    try:
+                        tool_obj.reset_cache()
+                    except Exception:
+                        pass
 
-        # Update cumulative spend and token tracking
-        self.total_cost_usd += getattr(result, "cost_usd", 0.0)
-        self.total_tokens_used += getattr(result, "total_tokens", 0)
+            # Ensure configured MCP servers are dynamically initialized before reasoning loop
+            if self.mcp_servers and not self._mcp_initialized:
+                await self.initialize_mcp_servers()
 
-        return result
+            # Optimize/process images if present
+            processed_images = None
+            if images:
+                processed_images = await self._process_images_async(images)
+
+            # Get existing conversation turns early so retrieval strategies can resolve coreferences
+            history = await self.conversation_memory.get_messages(actual_session_id)
+
+            # Retrieve RAG context if retriever configured and mode allows pipeline
+            retrieved_docs = None
+            if self.retriever and isinstance(prompt, str) and self.retrieval_mode in ("pipeline", "both"):
+                retrieved_docs = await self.retriever.retrieve_context(prompt, history=history)
+
+            # Retrieve long-term cognitive memories (Deterministic User Profile + Episodic Semantic Context)
+            mem_query = prompt if isinstance(prompt, str) else str(prompt)
+            if hasattr(self.long_term_memory, "retrieve_user_context"):
+                memories = await self.long_term_memory.retrieve_user_context(user_id=actual_user_id, query=mem_query)
+            else:
+                memories = await self.long_term_memory.retrieve_relevant_facts(mem_query)
+
+            # Collect tools
+            tool_defs = self._resolve_runtime_tools(tools) if tools else (self.tools or None)
+            resp_model = response_model or self.response_model
+
+            result = await self.loop.run(
+                prompt=prompt,
+                session_id=actual_session_id,
+                system_prompt=self.system_prompt,
+                conversation_history=history,
+                images=processed_images,
+                developer_prompt=self.developer_prompt,
+                long_term_memories=memories,
+                retrieved_documents=retrieved_docs,
+                response_model=resp_model,
+                tools=tool_defs,
+                agent_name=self.name,
+            )
+
+            # Sync back updated messages to conversation memory
+            await self.conversation_memory.backend.clear(actual_session_id)
+            await self.conversation_memory.backend.add_messages(actual_session_id, history)
+
+            # Update cumulative spend and token tracking
+            self.total_cost_usd += getattr(result, "cost_usd", 0.0)
+            self.total_tokens_used += getattr(result, "total_tokens", 0)
+
+            return result
+        finally:
+            current_user_id.reset(user_token)
+            current_session_id.reset(session_token)
 
     def run_sync(
         self,
         prompt: Union[str, List[Dict[str, Any]]],
         session: Optional[Union[str, Session]] = None,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         response_model: Optional[Type[BaseModel]] = None,
         images: Optional[List[str]] = None,
         tools: Optional[List[Any]] = None,
@@ -680,6 +745,7 @@ class Agent:
                             prompt,
                             session=session,
                             session_id=session_id,
+                            user_id=user_id,
                             response_model=response_model,
                             images=images,
                             tools=tools,
@@ -694,6 +760,7 @@ class Agent:
                     prompt,
                     session=session,
                     session_id=session_id,
+                    user_id=user_id,
                     response_model=response_model,
                     images=images,
                     tools=tools,
@@ -749,6 +816,7 @@ class Agent:
         prompt: Union[str, List[Dict[str, Any]]],
         session: Optional[Union[str, Session]] = None,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         images: Optional[List[str]] = None,
         response_model: Optional[Type[BaseModel]] = None,
         tools: Optional[List[Any]] = None,
@@ -758,8 +826,27 @@ class Agent:
         """Streams live events emitted during agent execution. Supports both async for and sync for."""
         target_session = session or session_id or kwargs.pop("session_id", None)
         actual_session_id = target_session.id if isinstance(target_session, Session) else (target_session or str(uuid.uuid4()))
+        
+        from ..session.session import current_user_id, current_session_id
+        resolved_user_id = user_id or kwargs.pop("user_id", None)
+        actual_user_id = (
+            target_session.user_id
+            if isinstance(target_session, Session) and target_session.user_id
+            else (resolved_user_id or current_user_id.get())
+        )
 
         async def _generator() -> AsyncIterator[Union[Event, Dict[str, Any]]]:
+            user_token = current_user_id.set(actual_user_id)
+            session_token = current_session_id.set(actual_session_id)
+
+            # Reset turn-level chunk deduplication on retrieval tools
+            for tool_obj in self.tool_registry.list_tools():
+                if hasattr(tool_obj, "reset_cache"):
+                    try:
+                        tool_obj.reset_cache()
+                    except Exception:
+                        pass
+
             # Ensure configured MCP servers are dynamically initialized before streaming
             if self.mcp_servers and not self._mcp_initialized:
                 await self.initialize_mcp_servers()
@@ -768,15 +855,18 @@ class Agent:
             if images:
                 processed_images = await self._process_images_async(images)
 
+            history = await self.conversation_memory.get_messages(actual_session_id)
+
             retrieved_docs = None
-            if self.retriever and isinstance(prompt, str):
-                retrieved_docs = await self.retriever.retrieve_context(prompt)
-                if retrieved_docs:
-                    self.working_memory.set_retrieved_documents(retrieved_docs)
+            if self.retriever and isinstance(prompt, str) and self.retrieval_mode in ("pipeline", "both"):
+                retrieved_docs = await self.retriever.retrieve_context(prompt, history=history)
 
             mem_query = prompt if isinstance(prompt, str) else str(prompt)
-            memories = await self.long_term_memory.retrieve_relevant_facts(mem_query)
-            history = await self.conversation_memory.get_messages(actual_session_id)
+            if hasattr(self.long_term_memory, "retrieve_user_context"):
+                memories = await self.long_term_memory.retrieve_user_context(user_id=actual_user_id, query=mem_query)
+            else:
+                memories = await self.long_term_memory.retrieve_relevant_facts(mem_query)
+
             tool_defs = self._resolve_runtime_tools(tools) if tools else (self.tools or None)
             resp_model = response_model or self.response_model
 
@@ -788,7 +878,6 @@ class Agent:
                     conversation_history=history,
                     images=processed_images,
                     developer_prompt=self.developer_prompt,
-                    working_memory_notes=self.working_memory.get_summary_notes(),
                     long_term_memories=memories,
                     retrieved_documents=retrieved_docs,
                     response_model=resp_model,
@@ -821,7 +910,13 @@ class Agent:
                     else:
                         yield event
             finally:
-                self.working_memory.clear()
+                try:
+                    await self.conversation_memory.backend.clear(actual_session_id)
+                    await self.conversation_memory.backend.add_messages(actual_session_id, history)
+                except Exception:
+                    pass
+                current_user_id.reset(user_token)
+                current_session_id.reset(session_token)
 
         return AgentStream(_generator)
 
@@ -830,6 +925,7 @@ class Agent:
         prompt: Union[str, List[Dict[str, Any]]],
         session: Optional[Union[str, Session]] = None,
         session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         images: Optional[List[str]] = None,
         response_model: Optional[Type[BaseModel]] = None,
         tools: Optional[List[Any]] = None,
@@ -845,6 +941,7 @@ class Agent:
                 prompt=prompt,
                 session=target_session,
                 session_id=actual_session_id,
+                user_id=user_id,
                 images=images,
                 response_model=response_model,
                 tools=tools,
