@@ -50,9 +50,9 @@ When `agent.ainvoke()` or `agent.astream()` is called, control is handed to `Age
 
 ```mermaid
 graph TD
-    Start["User Prompt / Session Start"] --> ContextCompaction["1. Context Manager Compaction"]
-    ContextCompaction --> PromptFormat["2. System & History Message Assembly"]
-    PromptFormat --> ModelCall["3. LiteLLM acompletion()"]
+    Start["User Prompt / Session Start"] --> StateFetch["1. Memory & Document Retrieval (Agent)"]
+    StateFetch --> ContextAssembly["2. ContextManager assemble_messages() & Compaction"]
+    ContextAssembly --> ModelCall["3. LiteLLM acompletion()"]
     
     ModelCall --> Decision{"Tool Call Requested?"}
     Decision -->|No| OutputExtraction["4. Output Parsing & Response Model"]
@@ -67,13 +67,13 @@ graph TD
     RejectResult --> RecordTrace
     RecordTrace --> CheckLimits{"Iteration Limit Reached?"}
     
-    CheckLimits -->|No| PromptFormat
+    CheckLimits -->|No| ContextAssembly
     CheckLimits -->|Yes| MaxIterationsError["Raise MaxIterationsError or Finalize"]
     OutputExtraction --> End["Return AgentResult"]
 ```
 
 ### Turn Lifecycle Steps:
-1. **Context Prep**: Retrieves relevant conversation history and compacts messages if context exceeds the token budget.
+1. **Context Prep & Assembly**: Gathers conversation history, user profile attributes, episodic memories, and retrieved documents. The Context Manager formats the payload according to configured memory placement and compacts messages if context exceeds the token budget.
 2. **Model Call**: Dispatches prompt and active OpenAPI tool definitions to LiteLLM.
 3. **Tool Execution**:
    - If the model returns `tool_calls`, arguments are parsed and validated against the tool's schema.

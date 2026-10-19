@@ -19,12 +19,13 @@ graph TD
         Engine --> ToolNode["Dynamic Tool Nodes"]
         Engine --> HumanNode["Human Approval Nodes"]
         
-        AgentNode --> Agent["Agent Instance"]
+        AgentNode --> Agent["Agent Instance (Orchestrator)"]
+        Agent <--> Memory["Multi-Layer Memory & Vector Store"]
         Agent --> Loop["AgentLoop (Reasoning Turns)"]
-        Loop --> Context["ContextManager (Sliding Window)"]
-        Loop --> Memory["Multi-Layer Memory (RAM, SQLite, Mongo)"]
+        Loop --> Context["ContextManager (Assembly & Compaction)"]
+        Context --> Router["LiteLLM Universal Router"]
         Loop --> Sandbox["SafeCodeSandbox (AST Security Validator)"]
-        Loop --> Router["LiteLLM Universal Router"]
+        Loop --> ToolNode
     end
     
     Router --> Providers["100+ LLM Providers (OpenAI, Anthropic, Bedrock, Ollama, Groq)"]
@@ -38,6 +39,6 @@ graph TD
 2. **Tools & Dynamic Tooling (`src/litellm_adk/tools/`)**: Typed tool decorators, `DynamicToolSpec`, AST security validator, and restricted code sandbox execution. See [Tools & Dynamic Tooling](./04-tools-and-dynamic-tooling.md).
 3. **Master Agent (`src/litellm_adk/agent/manager.py`)**: Autonomous prompt-to-agent compiler translating natural language instructions into canvas graphs. See [Master Agent & Prompt-Driven Studio](./05-master-agent-synthesis.md).
 4. **Workflow Engine (`src/litellm_adk/workflow/`)**: Asynchronous DAG scheduler with cycle detection, topological batch sorting, and live WebSocket streaming. See [Workflow Orchestration Engine](./06-workflow-orchestration-engine.md).
-5. **Memory & Context (`src/litellm_adk/memory/`, `src/litellm_adk/context/`)**: Multi-layer memory backends and sliding-window context compaction. See [Memory & Context Management](./08-memory-context-management.md).
+5. **Memory & Context (`src/litellm_adk/memory/`, `src/litellm_adk/context/`)**: Multi-tier conversation & long-term cognitive memory (deterministic profile + episodic vector store) and token-aware context compaction. See [Memory & Context Management](./08-memory-context-management.md).
 6. **Human-in-the-Loop (`src/litellm_adk/human/`)**: Sensitive action gating, approval audit logging, and asynchronous resumption. See [Human-in-the-Loop & Approvals](./09-human-in-the-loop-and-approvals.md).
 7. **Control Plane Server (`src/litellm_adk/server/`)**: FastAPI REST endpoints and real-time event streaming. See [REST API & Server Reference](./12-api-and-server-reference.md).

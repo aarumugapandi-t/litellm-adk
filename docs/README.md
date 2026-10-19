@@ -4,7 +4,7 @@ Welcome to the official documentation for the **LiteLLM Agent Development Kit (A
 
 ---
 
-## 📚 Documentation Index
+## Documentation Index
 
 | Guide | Description |
 |---|---|
@@ -23,7 +23,7 @@ Welcome to the official documentation for the **LiteLLM Agent Development Kit (A
 
 ---
 
-## 🚀 Key Architectural Pillars
+## Key Architectural Pillars
 
 ```mermaid
 graph TD
@@ -36,11 +36,13 @@ graph TD
         Engine --> ToolNode["Dynamic Tool Nodes"]
         Engine --> HumanNode["Human Approval Nodes"]
         
-        AgentNode --> Loop["AgentLoop"]
-        Loop --> Context["Context Manager"]
-        Loop --> Mem["Multi-Layer Memory"]
+        AgentNode --> Agent["Agent Instance"]
+        Agent <--> Mem["Multi-Layer Memory & Vector Store"]
+        Agent --> Loop["AgentLoop"]
+        Loop --> Context["Context Manager (Assembly & Compaction)"]
+        Context --> Router["LiteLLM Universal Router"]
         Loop --> Sandbox["Safe Code Sandbox"]
-        Loop --> Router["LiteLLM Universal Router"]
+        Loop --> ToolNode
     end
     
     Router --> Providers["100+ LLM Providers (OpenAI, Anthropic, Bedrock, Ollama, Groq)"]

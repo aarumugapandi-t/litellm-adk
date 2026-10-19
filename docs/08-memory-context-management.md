@@ -7,17 +7,23 @@ The LiteLLM ADK provides a multi-layer memory architecture (`src/litellm_adk/mem
 ## 1. Cognitive Memory Architecture
 
 ```mermaid
-graph TD
+flowchart TD
     UserTurn["User Turn Input"] --> Agent["Agent Orchestrator"]
     
-    subgraph "Cognitive Memory Hierarchy"
-        Agent <--> Scratchpad["1. Native Message Scratchpad\n(Tool calls & observations in active turn thread)"]
-        Agent <--> ConvoMem["2. Conversation Memory\n(Session-isolated multi-turn dialog history)"]
-        Agent <--> LongTermMem["3. Long-Term Memory\n(Dual-Tier: Deterministic Profile + Episodic Vector)"]
-        Agent <--> VectorMem["4. Vector Store (RAG)\n(Semantic similarity lookup across domain documents)"]
+    subgraph StorageHierarchy ["Storage & Retrieval Hierarchy"]
+        Agent <--> Scratchpad["1. Native Message Scratchpad<br/>Active turn tool calls & observations"]
+        Agent <--> ConvoMem["2. Conversation Memory<br/>Multi-turn session history"]
+        Agent <--> LongTermMem["3. Long-Term Cognitive Memory<br/>Deterministic Profile & Episodic Vector"]
+        Agent <--> VectorMem["4. Vector Store & Retriever<br/>Domain document semantic retrieval"]
     end
     
-    subgraph "Storage Adapters"
+    subgraph CompactionPipeline ["Context Assembly & Compaction Pipeline"]
+        Agent --> Loop["AgentLoop"]
+        Loop --> ContextMgr["ContextManager.assemble_messages()<br/>Token budgeting, placement & compaction"]
+        ContextMgr --> Model["LiteLLM Model Gateway"]
+    end
+    
+    subgraph StorageAdapters ["Storage Adapters"]
         ConvoMem --> SQLite["SQLAlchemy (SQLite, Postgres, MySQL)"]
         ConvoMem --> Mongo["MongoDB Backend"]
         ConvoMem --> InMem["In-Memory Store"]
@@ -116,7 +122,7 @@ relevant_notes = await memory.search_episodic_memory(
 
 ## 4. Context Management & Window Compaction (`ContextManager`)
 
-When conversation history grows, naive message appending causes context overflows and inflated latency. The `ContextManager` applies dynamic compaction policies:
+The `ContextManager` operates as a pure prompt assembly and token compaction pipeline rather than an I/O storage broker. While the `Agent` queries conversation history, user profiles, and vector stores, the `ContextManager` formats the prompt payload via `assemble_messages()` and enforces hard token boundaries:
 
 ```python
 from litellm_adk.context import ContextManager, ContextPolicy, ContextStrategy
@@ -127,6 +133,7 @@ context_mgr = ContextManager(
         strategy=ContextStrategy.SLIDING_WINDOW,  # Sliding window compaction
         preserve_system_prompt=True,              # Never evict system instructions
         preserve_last_n_messages=4,               # Always preserve recent exchanges
+        memory_placement="system_prompt",         # "system_prompt" or "user_turn"
     )
 )
 
@@ -136,11 +143,13 @@ agent = Agent(
 )
 ```
 
-### Compaction Strategies (`ContextStrategy`)
+### Context Configuration & Compaction
 
-1. **`SLIDING_WINDOW`**: Evicts the oldest non-system messages once token count exceeds `max_tokens`.
-2. **`SUMMARIZATION`**: Uses a background LLM call to condense older conversation turns into a summarized context chunk.
-3. **`SEMANTIC_TRUNCATION`**: Removes intermediate tool calling traces while keeping final assistant answers.
+- **Memory Placement (`memory_placement`)**: Dictates where deterministic profiles, episodic memories, and retrieved documents are injected. Set to `"system_prompt"` to append constraints directly to system instructions, or `"user_turn"` to include context in the user's turn prompt.
+- **Compaction Strategies (`ContextStrategy`)**:
+  1. **`SLIDING_WINDOW`**: Evicts the oldest non-system messages once token count exceeds `max_tokens`.
+  2. **`SUMMARIZATION`**: Uses a background LLM call to condense older conversation turns into a summarized context chunk.
+  3. **`SEMANTIC_TRUNCATION`**: Removes intermediate tool calling traces while keeping final assistant answers.
 
 ---
 

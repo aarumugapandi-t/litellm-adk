@@ -38,16 +38,16 @@ graph TB
     end
 
     subgraph AgentRuntime ["Agent Runtime Core"]
-        AgentCore["Agent Instance"]
+        AgentCore["Agent Instance (Orchestrator)"]
         AgentLoop["AgentLoop (Reasoning Turns)"]
-        ContextMgr["ContextManager (Sliding Window / Compaction)"]
+        ContextMgr["ContextManager (Payload Assembly & Compaction)"]
         ToolExec["ToolExecutor & ToolRegistry"]
         ApprovalMgr["ApprovalManager"]
         Sandbox["SafeCodeSandbox (AST Security Validator)"]
     end
 
     subgraph FoundationLayer ["Foundation & Infrastructure"]
-        MemoryLayer["Multi-Layer Memory (RAM, SQLite, Mongo, Vector)"]
+        MemoryLayer["Cognitive Memory & Vector Store (Conversation, Profile, Episodic, RAG)"]
         LiteLLMRouter["LiteLLM Universal Router"]
         ModelProviders["100+ Model Providers (OpenAI, Anthropic, Ollama, Cohere, Bedrock)"]
     end
@@ -63,13 +63,13 @@ graph TB
 
     Engine --> TriggerNode & DynamicToolNode & LogicNodes & AgentNode & HumanNode & OutputNode
     AgentNode --> AgentCore
+    AgentCore <--> MemoryLayer
     AgentCore --> AgentLoop
-    AgentLoop --> ContextMgr & ToolExec & ApprovalMgr
+    AgentLoop --> ContextMgr
+    ContextMgr --> LiteLLMRouter
+    AgentLoop --> ToolExec & ApprovalMgr
     DynamicToolNode --> Sandbox
     ToolExec --> Sandbox
-
-    AgentLoop --> MemoryLayer
-    AgentLoop --> LiteLLMRouter
     LiteLLMRouter --> ModelProviders
 ```
 
@@ -142,7 +142,8 @@ sequenceDiagram
 | **Tools & Dynamic Tooling** | `src/litellm_adk/tools/` | Tool abstractions, AST security validation, restricted sandbox execution, OpenAPI schema generation, and MCP protocols. |
 | **Master Agent & Studio** | `src/litellm_adk/agent/manager.py` | Prompt-to-Agent autonomous compiler, domain tool inference, and canvas graph wiring. |
 | **Workflow Runtime** | `src/litellm_adk/workflow/` | DAG topological sort, concurrent node scheduling, expression evaluation, and event bus broadcasting. |
-| **Memory & Context** | `src/litellm_adk/memory/`, `src/litellm_adk/context/` | Ephemeral, SQLite, MongoDB memory stores, token window management, and compaction strategies. |
+| **Memory & Storage** | `src/litellm_adk/memory/`, `src/litellm_adk/vector/` | Conversation history, dual-tier long-term cognitive memory (deterministic profile + episodic vector store), and RAG vector search. |
+| **Context Management** | `src/litellm_adk/context/` | Token budget enforcement, message payload assembly, memory placement (`system_prompt` vs `user_turn`), and sliding-window compaction. |
 | **Safety & Approvals** | `src/litellm_adk/approval/`, `src/litellm_adk/human/` | Human-in-the-loop decision gating, pending approval storage, and resumption handlers. |
 | **Multi-Agent** | `src/litellm_adk/multiagent/` | Hierarchical supervisor networks, agent teams, and bidirectional delegation handoffs. |
 | **Server & Control Plane** | `src/litellm_adk/server/` | REST API routes, WebSocket live streaming, SQLite persistence, and static UI delivery. |

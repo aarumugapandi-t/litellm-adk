@@ -16,18 +16,38 @@ Following the principle:
 > *"The Agent orchestrates. Components specialize. Interfaces enable replacement. LiteLLM handles model-provider abstraction."*
 
 ```mermaid
-graph TD
-    Agent["Agent (Orchestrator)"] --> Loop["Agent Loop (Observe -> Decide -> Act)"]
-    Loop --> Model["Model (LiteLLM Gateway)"]
-    Loop --> ContextMgr["Context Manager"]
-    Loop --> ToolExec["Tool Executor & Registry"]
-    Loop --> HITL["Human-in-the-Loop"]
-    Loop --> EventBus["Event Bus & Streaming"]
-    Loop --> Middleware["Middleware Pipeline"]
-    ContextMgr --> Memory["Cognitive Memory System"]
-    Memory --> ConvMem["Conversation Memory (Turns)"]
-    Memory --> LongTermMem["Long-Term Memory (Profile & Episodic)"]
-    ContextMgr --> RAG["Retriever & Vector Store"]
+flowchart TD
+    subgraph Orchestration ["Orchestration Layer"]
+        Agent["Agent (Orchestrator)"] --> Loop["Agent Loop<br/>Observe -> Decide -> Act"]
+    end
+
+    subgraph Storage ["Storage & Retrieval Layers"]
+        Agent <--> ConvMem["Conversation Memory<br/>Multi-Turn Sessions"]
+        Agent <--> LongTermMem["Long-Term Memory<br/>Profile & Episodic Vector"]
+        Agent <--> RAG["Retriever & Vector Store<br/>External Documents"]
+    end
+
+    subgraph Assembly ["Prompt & Context Assembly"]
+        Loop --> ContextMgr["Context Manager<br/>Token Budget & Compaction"]
+    end
+
+    subgraph Execution ["Execution & Inference"]
+        ContextMgr --> Model["Model (LiteLLM Gateway)"]
+        Loop --> ToolExec["Tool Executor & Registry"]
+        Loop --> HITL["Human-in-the-Loop"]
+        Loop --> EventBus["Event Bus & Streaming"]
+        Loop --> Middleware["Middleware Pipeline"]
+    end
+
+    classDef agent fill:#0f2942,stroke:#33aaff,color:#fff
+    classDef memory fill:#073b32,stroke:#00e6a0,color:#fff
+    classDef retrieval fill:#281b45,stroke:#a78bfa,color:#fff
+    classDef system fill:#252a34,stroke:#718096,color:#fff
+
+    class Agent,Loop agent
+    class ConvMem,LongTermMem memory
+    class RAG retrieval
+    class ContextMgr,Model,ToolExec,HITL,EventBus,Middleware system
 ```
 
 ---
@@ -203,8 +223,8 @@ Subscribe to fine-grained lifecycle events or stream deltas directly:
 ```python
 agent = Agent(model="openai/gpt-4o")
 
-agent.on("tool.started", lambda ev: print(f"🔧 Starting tool: {ev.tool_name}"))
-agent.on("tool.completed", lambda ev: print(f"✅ Finished tool: {ev.tool_name}"))
+agent.on("tool.started", lambda ev: print(f"[Tool Started] {ev.tool_name}"))
+agent.on("tool.completed", lambda ev: print(f"[Tool Completed] {ev.tool_name}"))
 
 async for event in agent.stream("Research latest breakthroughs in fusion energy."):
     if event.type == "text.delta":

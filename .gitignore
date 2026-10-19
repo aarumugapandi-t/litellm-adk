@@ -37,6 +37,7 @@ htmlcov/
 # Databases & Runtime
 *.db
 .litellm-adk/
+data
 
 # Node modules
 node_modules
