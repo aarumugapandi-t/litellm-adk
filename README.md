@@ -58,12 +58,6 @@ flowchart TD
 pip install litellm-adk
 ```
 
-Optional dependencies:
-```bash
-pip install litellm-adk[telemetry]  # OpenTelemetry instrumentation
-pip install litellm-adk[embeddings] # Local embeddings
-```
-
 ---
 
 ## Quick Start
